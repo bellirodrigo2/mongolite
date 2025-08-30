@@ -1,0 +1,78 @@
+# MongoLite .gitignore
+
+.claude/
+
+
+
+# Dependencies (source repositories)
+.deps/
+sqlite/
+mongo-c-driver/
+
+# Build directories
+build/
+cmake-build-*/
+.build/
+out/
+
+# Compiled binaries
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+
+# Object files
+*.o
+*.obj
+*.lo
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+
+# IDE files
+.vscode/
+.idea/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.swp
+*.swo
+*~
+
+# Test outputs
+test_results/
+coverage/
+*.gcda
+*.gcno
+
+# Package manager files
+node_modules/
+.npm/
+
+# Documentation build
+docs/_build/
+docs/html/
+docs/latex/
+
+# Generated configuration files
+config.h
+version.h
+bson-config.h
+sqlite-config.h
