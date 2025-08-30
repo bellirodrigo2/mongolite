@@ -1,138 +1,161 @@
-# SQLite Core - Next Steps for Compilation
+# MongoLite - Next Steps
 
-## Current Status
-✅ **COMPLETED**: Successfully copied core SQLite files to `src/sqlite-core/`
-✅ **COMPLETED**: Created comprehensive documentation in `SQLITE_CORE_ANALYSIS.md`
-✅ **COMPLETED**: Identified 42 core files needed for storage engine functionality
+## Current Status ✅
 
-## Files Successfully Copied (42 files)
-### Core Engine Files
-- `btree.c`, `btree.h`, `btreeInt.h` - B-tree storage engine
-- `pager.c`, `pager.h` - Page cache and transaction management  
-- `os.c`, `os.h`, `os_*.c` files - Cross-platform file I/O
-- `pcache.c`, `pcache.h`, `pcache1.c` - Page caching system
-- `sqlite.h`, `sqliteInt.h` - Main API and internal definitions
+**SQLite Integration**: ✅ COMPLETE  
+**Build System**: ✅ COMPLETE  
+**Testing**: ✅ VERIFIED  
 
-### Supporting Files
-- Memory management: `malloc.c`, `mem*.c` files
-- Threading: `mutex.c`, `mutex_*.c` files
-- Utilities: `hash.c`, `util.c`, `printf.c`, `utf.c`, etc.
+With the SQLite amalgamation successfully integrated, MongoLite has a solid foundation for document storage. The project is ready to move to the next development phase.
 
-## IMMEDIATE NEXT STEPS (for session with compiler)
+## Immediate Next Steps (Priority 1)
 
-### 1. Identify and Create Missing Generated Headers
-**PRIORITY**: These files are generated during SQLite build process and are missing:
-- `opcodes.h` - Required by `global.c` 
-- `parse.h` - SQL parser definitions (may not be needed for MongoLite)
-- `keywordhash.h` - Keyword hash table (may not be needed)
+### 1. 🔧 BSON Document Storage Layer
+**Goal**: Store and retrieve BSON/JSON documents in SQLite tables
 
-**Action**: 
+**Tasks**:
+- [ ] Design document storage schema in SQLite
+- [ ] Implement BSON serialization/deserialization
+- [ ] Create collection management layer
+- [ ] Add document CRUD operations
+
+**Files to create**:
+```
+src/mongolite/
+├── bson.c/.h         # BSON handling
+├── document.c/.h     # Document storage
+├── collection.c/.h   # Collection management
+└── storage.c/.h      # SQLite integration
+```
+
+**Success criteria**:
+- Store JSON documents as BSON in SQLite
+- Retrieve documents with proper type handling
+- Support embedded documents and arrays
+
+### 2. 📋 MongoDB Query API (Basic)
+**Goal**: Implement core MongoDB find/insert/update operations
+
+**Tasks**:
+- [ ] Design MongoDB-compatible API
+- [ ] Implement basic find() operations
+- [ ] Add insert/update/delete operations
+- [ ] Create query translator (MongoDB → SQL)
+
+**Files to create**:
+```
+src/mongolite/
+├── mongolite.c/.h    # Main API
+├── query.c/.h        # Query operations
+├── translator.c/.h   # MongoDB→SQL translation
+└── api.c/.h          # Public interface
+```
+
+## Medium-term Goals (Priority 2)
+
+### 3. 🔍 Query Optimization & Indexing
+- MongoDB-style index creation
+- Query optimization using SQLite indexes
+- Compound index support
+
+### 4. 🧪 Comprehensive Testing
+- Unit tests for all components
+- Integration tests
+- Performance benchmarks
+- MongoDB compatibility tests
+
+### 5. 📖 Documentation & Examples
+- API documentation
+- Usage examples
+- Performance guides
+- Migration tools
+
+## Long-term Vision (Priority 3)
+
+### 6. 🌐 Advanced Features
+- Aggregation pipeline (basic)
+- Transactions support
+- Replica set simulation (multi-file)
+- GridFS-like large file support
+
+### 7. 🚀 Production Readiness
+- Error handling and recovery
+- Memory optimization
+- Concurrency improvements
+- Security features
+
+## Development Strategy
+
+### Phase 1: Core Storage (Current Focus)
+```
+MongoDB Document → BSON → SQLite Row
+```
+
+### Phase 2: Query Layer
+```
+db.collection.find({name: "John"}) → SELECT * FROM docs WHERE json_extract(data, '$.name') = 'John'
+```
+
+### Phase 3: Full API
+```
+Complete MongoDB-compatible interface for embedded use
+```
+
+## Resource Requirements
+
+### Development Tools
+- C compiler with C99 support ✅
+- SQLite 3.46.1 amalgamation ✅ 
+- JSON/BSON library (to evaluate: json-c, cJSON, or custom)
+- Unit testing framework (consider: cmocka, unity)
+
+### External Libraries (Evaluation Needed)
 ```bash
-# Find these files in SQLite build directory or generate them
-find .deps/sqlite/ -name "opcodes.h" -o -name "parse.h" 
-# If not found, check tool/ directory for generators:
-# - mkopcodes.tcl generates opcodes.h
-# - lemon generates parse.h from parse.y
+# Candidates for BSON support
+-ljson-c      # Mature JSON library
+-lcjson       # Lightweight alternative  
+# OR implement custom BSON parser
 ```
 
-### 2. Create Minimal Compilation Test
-**File**: `test_compile.c` (already created)
-**Command**: 
-```bash
-cd src/sqlite-core
-gcc -DSQLITE_CORE -DSQLITE_OMIT_LOAD_EXTENSION -c test_compile.c
+## Project Structure (Next Iteration)
+
+```
+mongolite/
+├── src/
+│   ├── sqlite/        # ✅ SQLite amalgamation
+│   ├── mongolite/     # 🔧 Core implementation 
+│   ├── tests/         # 🧪 Test suite expansion
+│   └── examples/      # 📖 Usage examples
+├── docs/             # 📖 Documentation
+└── benchmarks/       # 📊 Performance tests
 ```
 
-### 3. Resolve Compilation Issues Systematically
-Expected issues and solutions:
+## Success Metrics
 
-#### Missing Headers
-- Copy or generate missing `.h` files from SQLite build
-- May need to run SQLite's configure/build process once to generate headers
+### Phase 1 Completion:
+- [ ] Store/retrieve JSON documents 
+- [ ] Basic collection operations
+- [ ] CRUD functionality working
 
-#### Unused Features to Disable
-Add these defines to minimize dependencies:
-```c
-#define SQLITE_OMIT_LOAD_EXTENSION
-#define SQLITE_OMIT_SHARED_CACHE  
-#define SQLITE_OMIT_WAL
-#define SQLITE_OMIT_AUTOVACUUM
-#define SQLITE_OMIT_JSON
-#define SQLITE_THREADSAFE=0  // If single-threaded
-```
+### Phase 2 Completion:
+- [ ] MongoDB find() queries work
+- [ ] Query translation accurate
+- [ ] Performance acceptable
 
-#### Platform-Specific Code
-- Use appropriate `os_*.c` file based on target platform
-- May need to adjust `#ifdef` conditions in `os_setup.h`
+### Final Success:
+- [ ] Drop-in replacement for MongoDB in embedded contexts
+- [ ] Performance comparable to SQLite
+- [ ] MongoDB compatibility for common operations
 
-### 4. Create Minimal MongoLite API Bridge
-Once compilation works, create:
-- `mongolite.h` - Public API header
-- `mongolite.c` - Bridge between MongoDB-style API and SQLite B-tree
-- Focus on basic operations: create collection, insert document, find document
+---
 
-## COMPILATION STRATEGY
+## Legacy Information
 
-### Phase 1: Core Storage Only
-Compile minimal set for storage engine:
-```bash
-gcc -DSQLITE_CORE -c \
-  btree.c pager.c os.c pcache.c pcache1.c \
-  mutex.c mutex_unix.c hash.c malloc.c \
-  mem1.c util.c random.c global.c \
-  -o sqlite-core.o
-```
+~~The previous next steps focused on compiling individual SQLite files, which is now resolved by the amalgamation approach.~~
 
-### Phase 2: Add Platform Support  
-Add appropriate OS layer:
-- Unix: `os_unix.c`
-- Windows: `os_win.c`
+**Previous concerns resolved**:
+- ❌ Complex build dependencies → ✅ Single file compilation
+- ❌ Missing headers/functions → ✅ Complete implementation
+- ❌ Platform compatibility → ✅ Cross-platform amalgamation  
 
-### Phase 3: Integration Test
-Create simple test that:
-1. Opens a B-tree database file
-2. Inserts key-value pairs (simulate BSON documents)
-3. Retrieves data by key
-4. Closes database
-
-### Phase 4: BSON Integration
-Add libbson integration from `.deps/mongo-c-driver/`
-
-## FILE STRUCTURE READY FOR NEXT SESSION
-```
-src/sqlite-core/
-├── SQLITE_CORE_ANALYSIS.md     # Complete file documentation
-├── NEXT_STEPS.md                # This file - compilation roadmap
-├── test_compile.c               # Test compilation file
-├── [42 SQLite core files]       # All needed source files
-└── [Missing generated headers]   # Need to resolve in next session
-```
-
-## KEY SUCCESS INDICATORS
-1. ✅ All 42 core files copied and documented
-2. 🔄 Compilation test passes (need compiler)
-3. ⏭️ Basic B-tree operations work
-4. ⏭️ BSON document storage/retrieval functional
-5. ⏭️ MongoDB-like API layer created
-
-## NOTES FOR NEXT SESSION
-- This is a **storage engine extraction**, not full SQLite rebuild
-- Focus on **B-tree + Pager + OS abstraction** as core components
-- **Minimize dependencies** - omit SQL parsing, virtual tables, etc.
-- **Goal**: Functional C library for document storage with MongoDB API
-- **Architecture**: SQLite storage + BSON serialization + MongoDB API
-
-## COMPILATION COMMAND REFERENCE
-```bash
-# Basic test compilation
-gcc -DSQLITE_CORE -DSQLITE_OMIT_LOAD_EXTENSION -I. -c test_compile.c
-
-# Full minimal build (once headers resolved)
-gcc -DSQLITE_CORE -DSQLITE_OMIT_LOAD_EXTENSION \
-    -DSQLITE_OMIT_SHARED_CACHE -DSQLITE_THREADSAFE=0 \
-    -I. -c btree.c pager.c os.c os_unix.c pcache.c pcache1.c \
-    mutex.c mutex_noop.c hash.c malloc.c mem1.c util.c \
-    random.c global.c bitvec.c status.c printf.c utf.c
-```
-
-**Status**: Ready for compilation phase with proper C development environment.
+**Development can now focus on MongoLite-specific functionality.**

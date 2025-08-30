@@ -9,6 +9,13 @@
 sqlite/
 mongo-c-driver/
 
+# Development session files (temporary .md files for development tracking)
+*_SESSION*.md
+*_NOTES*.md
+*_DEV*.md
+PHASE*_COMPLETE.md
+SESSION_SUMMARY.md
+
 # Build directories
 build/
 cmake-build-*/
@@ -61,6 +68,15 @@ test_results/
 coverage/
 *.gcda
 *.gcno
+
+# Test databases and generated files
+*.db
+*.sqlite
+*.sqlite3
+test_*.db
+src/tests/test_*
+!src/tests/*.c
+!src/tests/*.h
 
 # Package manager files
 node_modules/
