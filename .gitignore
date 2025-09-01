@@ -5,9 +5,14 @@
 
 
 # Dependencies (source repositories)
-.deps/
-sqlite/
-mongo-c-driver/
+deps/*
+!/deps/
+
+build/*
+!/build/
+
+#Development related documents
+docs/development/*
 
 # Development session files (temporary .md files for development tracking)
 *_SESSION*.md
