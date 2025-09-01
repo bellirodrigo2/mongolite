@@ -12,7 +12,7 @@ build/*
 !/build/
 
 #Development related documents
-docs/development/*
+docs/dev/*
 
 # Development session files (temporary .md files for development tracking)
 *_SESSION*.md
