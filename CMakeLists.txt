@@ -37,6 +37,9 @@ FetchContent_MakeAvailable(mongo_c_driver)
 set(MONGO_C_DRIVER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/mongo-c-driver)
 set(LIBBSON_DIR ${MONGO_C_DRIVER_DIR}/src/libbson)
 
+# TODO: Build libbson from source later
+# add_subdirectory(${MONGO_C_DRIVER_DIR} mongo-c-driver EXCLUDE_FROM_ALL)
+
 # Use the built SQLite source with all headers generated
 set(SQLITE_BUILD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/sqlite-src)
 
@@ -96,8 +99,6 @@ target_link_libraries(mongolite PUBLIC
 # Include directories for mongolite
 target_include_directories(mongolite PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${LIBBSON_DIR}/src/bson        # libbson headers
-    ${MONGO_C_DRIVER_DIR}/src      # MongoDB C driver headers
 )
 
 # Test executables
@@ -107,7 +108,11 @@ target_link_libraries(test_sqlite PRIVATE sqlite3)
 add_executable(test_btree tests/test_btree.c)
 target_link_libraries(test_btree PRIVATE sqlite3)
 
+add_executable(test_mongolite tests/test_mongolite.c)
+target_link_libraries(test_mongolite PRIVATE mongolite sqlite3)
+
 # Enable testing
 enable_testing()
 add_test(NAME basic_sqlite_test COMMAND test_sqlite)
 add_test(NAME btree_test COMMAND test_btree)
+add_test(NAME mongolite_test COMMAND test_mongolite)

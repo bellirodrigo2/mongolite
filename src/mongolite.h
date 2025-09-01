@@ -3,7 +3,12 @@
 
 #include <stddef.h>
 #include <stdbool.h>
-#include <bson/bson.h>
+#include <stdint.h>
+// #include <bson/bson.h>  // TODO: Add BSON support later
+
+// Temporary BSON placeholders
+typedef struct bson bson_t;
+typedef struct bson_error bson_error_t;
 
 #ifdef __cplusplus
 extern "C" {

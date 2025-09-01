@@ -1,183 +1,185 @@
-# MongoLite Project Overview
+# MongoLite 
 
-## What We Will Accomplish
+A MongoDB-like document database using SQLite's storage engine, designed for embedded systems and applications requiring minimal footprint.
 
-MongoLite is a MongoDB-like document database that uses SQLite as its storage backend. It provides a familiar MongoDB API for document operations while leveraging SQLite's proven reliability, ACID compliance, and file-based architecture.
+## 🎯 Project Goals
 
-### Key Goals
+- **MongoDB-Compatible API**: Familiar document operations without MongoDB server overhead
+- **SQLite B-tree Storage**: Leverage SQLite's reliability WITHOUT SQL compilation  
+- **Embedded-First**: Optimized for IoT, mobile, and resource-constrained environments
+- **Single File Database**: No server, no configuration, just a `.mlite` file
+- **Minimal Binary Size**: Target 75% smaller than full SQLite (200-400KB vs 1.5MB+)
 
-1. **MongoDB-Compatible API**: Provide a subset of MongoDB's most commonly used operations
-2. **SQLite B-tree Storage**: Use SQLite's B-tree engine WITHOUT SQL compilation
-3. **File-Based Architecture**: Single file database like SQLite, no server required
-4. **BSON Document Support**: Native BSON document handling using MongoDB's libbson
-5. **Embedded Usage**: Optimized for embedded systems with minimal footprint
-6. **No SQL Engine**: Eliminate SQL parser/compiler to reduce binary size and improve performance
+## ✅ Current Progress (Phase 1)
 
-### Target Use Cases
+### Core Infrastructure - COMPLETE ✅
+- [x] **Database Operations**: `mlite_open()`, `mlite_close()`, `mlite_open_v2()`
+- [x] **Collection Management**: `mlite_collection_create()`, `mlite_collection_drop()`, `mlite_collection_exists()`
+- [x] **Error Handling**: `mlite_errmsg()`, `mlite_errcode()` with proper memory management
+- [x] **Build System**: CMake integration with SQLite source build
+- [x] **Test Suite**: Comprehensive tests for all implemented functionality
 
-- **Embedded Systems**: Document storage without SQL engine overhead (smaller binary size)
-- **IoT Devices**: MongoDB-style operations with minimal memory footprint
-- **Mobile Applications**: Local document storage with familiar MongoDB API
-- **Performance-Critical Apps**: Avoid SQL compilation overhead, direct B-tree access
-- **Resource-Constrained Environments**: Full SQL engine too heavy, need document storage
+### What Works Now
+```c
+// Open database
+mlite_db_t *db;
+mlite_open("myapp.mlite", &db);
 
-## Technical Approach
+// Create collections  
+mlite_collection_create(db, "users");
+mlite_collection_create(db, "products");
 
-### Architecture Overview
+// Check if collection exists
+if (mlite_collection_exists(db, "users")) {
+    printf("Users collection ready!\n");
+}
 
+// Drop collections
+mlite_collection_drop(db, "products");
+
+// Clean close
+mlite_close(db);
 ```
-Phase 1: Simple Approach
-Application → MongoLite API → BSON Processing → SQLite SQL API → Database File
 
-Phase 2+: Optimized Approach  
-Application → MongoLite API → BSON Processing → SQLite B-tree API → Database File
-```
-
-### Storage Strategy (Phased Approach)
-
-#### Phase 1: SQL-based Prototype (Development Only)
-**TEMPORARY** approach using SQL for rapid prototyping:
+### Database Schema (Phase 1)
 ```sql
--- Development-only table structure
-CREATE TABLE collection_<name> (
+-- Each collection becomes a table
+CREATE TABLE collection_users (
     _id TEXT PRIMARY KEY,
     document BLOB NOT NULL
 );
-```
-⚠️ **Important**: This SQL usage is ONLY for initial development. The end goal is to eliminate SQL entirely.
 
-#### Phase 2: Direct B-tree Implementation (Production Target)
-**PRIMARY GOAL** - Replace all SQL with direct B-tree operations:
-- **Collections as B-trees**: Each collection = separate B-tree structure
-- **No SQL Compilation**: Use only `sqlite3Btree*()` functions
-- **Custom Key Encoding**: Optimized _id storage without SQL overhead
-- **Binary Size Reduction**: Eliminate SQL parser, tokenizer, and compiler
-
-#### Phase 3: Advanced B-tree Features (Performance Optimization)
-- **Secondary B-trees**: Field indexes using separate B-tree structures
-- **Compound Indexes**: Multi-field indexes like MongoDB
-- **BSON-optimized Storage**: Custom layouts to offset BSON parsing costs
-
-### Key Technical Components
-
-#### 1. Database Management (Phase 1)
-- **SQL Operations**: Use standard SQLite API for table operations
-- **Collection Management**: CREATE/DROP TABLE for collections
-- **Simple Schema**: TEXT _id + BLOB document storage
-
-#### 2. Document Processing
-- **BSON Integration**: Use MongoDB's libbson for document parsing/serialization  
-- **ID Generation**: Automatic ObjectId generation for documents without `_id`
-- **Blob Storage**: Store complete BSON documents as SQLite BLOBs
-
-#### 3. Query Engine (Phase 1)
-- **SQL-based Queries**: Use SELECT statements for _id lookups
-- **In-memory Filtering**: Parse BSON and filter documents in application layer
-- **Cursor Implementation**: SQLite result sets wrapped as MongoLite cursors
-
-#### 4. CRUD Operations (Phase 1)
-- **Insert**: `INSERT INTO collection_name (_id, document) VALUES (?, ?)`
-- **Update**: Retrieve document, modify BSON in memory, UPDATE blob
-- **Delete**: `DELETE FROM collection_name WHERE _id = ?`  
-- **Find**: `SELECT * FROM collection_name` + in-memory BSON filtering
-
-#### 5. Future Optimization (Phase 2+)
-- **B-tree Direct Access**: Bypass SQL for performance-critical operations
-- **Field Indexes**: Extract BSON fields into separate B-tree structures
-- **Custom Storage**: Optimized document layout and key encoding
-
-### Implementation Phases
-
-#### Phase 1: Core SQL-based Infrastructure
-- [x] API design and header file
-- [ ] Database open/close using standard SQLite API
-- [ ] Collection table creation (`CREATE TABLE collection_name`)
-- [ ] Basic insert operations with SQL (`INSERT INTO`)
-
-#### Phase 2: Basic CRUD Operations  
-- [ ] Document insertion with SQL prepared statements
-- [ ] _id-based lookups with `SELECT WHERE _id = ?`
-- [ ] Update operations (fetch BSON, modify, UPDATE)
-- [ ] Delete operations with `DELETE WHERE _id = ?`
-
-#### Phase 3: Query and Indexing
-- [ ] Find operations with in-memory BSON filtering
-- [ ] Cursor implementation wrapping SQLite result sets  
-- [ ] Count operations with `SELECT COUNT(*)`
-- [ ] Basic field indexing exploration
-
-#### Phase 4: B-tree Optimization Migration
-- [ ] Benchmark SQL vs B-tree approaches
-- [ ] Migrate hot paths to direct B-tree API
-- [ ] Implement field-based secondary indexes
-- [ ] Advanced query optimization
-
-### Technical Challenges
-
-#### Phase 1 Challenges
-1. **BSON-SQL Integration**: Efficiently storing/retrieving BSON as SQLite BLOBs
-2. **ID Management**: Handling MongoDB ObjectId vs SQLite TEXT PRIMARY KEY  
-3. **Query Translation**: Converting MongoDB queries to in-memory BSON filtering
-4. **Performance**: Ensuring acceptable performance with SQL + in-memory filtering
-
-#### Production Phase Challenges (Critical for Embedded Systems)
-5. **SQL Engine Elimination**: Complete removal of SQL parser/compiler from final binary
-6. **Binary Size Optimization**: Minimize footprint for embedded/IoT deployment  
-7. **Performance vs Size Trade-off**: BSON parsing overhead vs SQL compilation elimination
-8. **B-tree Direct Access**: Implementing all operations without SQL layer
-9. **Field Index Design**: MongoDB-style compound indexes using only B-tree operations
-10. **Memory Efficiency**: Optimal BSON handling to offset parsing costs in constrained environments
-
-### Dependencies
-
-#### Production Build (Final Target)
-- **SQLite 3 B-tree Engine ONLY**: Internal B-tree API without SQL engine compilation
-- **libbson**: MongoDB's BSON library for document handling  
-- **Standard C Libraries**: For system operations and memory management
-
-#### Development Build (Temporary)
-- **SQLite 3 Source**: Full SQLite for rapid prototyping (will be eliminated)
-
-### Binary Size Impact
-- **With SQL Engine**: ~1.5MB+ (full SQLite)
-- **B-tree Only Target**: ~200-400KB (estimated, B-tree + pager + OS interface only)
-- **Size Reduction**: ~75% smaller binary for embedded deployment
-
-### Key SQLite APIs Used
-
-#### Phase 1: Standard SQL API (Development Only - WILL BE REMOVED)
-⚠️ **TEMPORARY USAGE** - These will be eliminated in production:
-- `sqlite3_open()` / `sqlite3_close()` - Database management
-- `sqlite3_exec()` - DDL operations (CREATE TABLE, etc.)  
-- `sqlite3_prepare_v2()` / `sqlite3_step()` - Prepared statements
-- `sqlite3_bind_text()` / `sqlite3_bind_blob()` - Parameter binding
-
-#### Production Target: B-tree API ONLY (Final Implementation)
-🎯 **PRODUCTION IMPLEMENTATION** - Only these APIs in final binary:
-- `sqlite3BtreeOpen()` / `sqlite3BtreeClose()` - Database file management
-- `sqlite3BtreeBeginTrans()` / `sqlite3BtreeCommit()` - Transaction control
-- `sqlite3BtreeCreateTable()` - B-tree creation (collections)
-- `sqlite3BtreeCursor()` - Cursor creation for navigation
-- `sqlite3BtreeInsert()` / `sqlite3BtreeDelete()` - Document operations
-- `sqlite3BtreeMoveto()` / `sqlite3BtreeNext()` - Key seeking and iteration
-
-**Result**: No SQL parser, no compiler, no tokenizer = Much smaller binary + Better performance
-
-### File Structure
-
-```
-mongolite/
-├── src/
-│   ├── mongolite.h          # Public API
-│   ├── mongolite.c          # Implementation
-│   └── internal/            # Internal headers
-├── deps/
-│   ├── sqlite-src/          # SQLite source
-│   └── mongo-c-driver/      # MongoDB C driver (for libbson)
-├── tests/                   # Test suite
-├── docs/
-│   └── dev/                 # Development documentation
-└── CMakeLists.txt          # Build configuration
+-- Metadata tracking
+CREATE TABLE _mlite_collections (
+    name TEXT PRIMARY KEY,
+    created_at INTEGER
+);
 ```
 
-This approach gives us the best of both worlds: MongoDB's intuitive document API with SQLite's reliability and simplicity.
+## 🚧 Next Steps (Phase 2)
+
+### Document Operations (Next Priority)
+- [ ] `mlite_insert_one()` - Insert single BSON document
+- [ ] `mlite_insert_many()` - Batch document insertion  
+- [ ] `mlite_find()` - Query with cursor-based iteration
+- [ ] `mlite_update_one()`, `mlite_delete_one()` - Basic CRUD operations
+
+### BSON Integration
+- [ ] Integrate MongoDB's libbson library
+- [ ] Automatic ObjectId generation for documents without `_id`
+- [ ] BSON document validation and serialization
+
+## 🎯 Architecture Strategy
+
+### Phase 1: SQL-based Prototype (Current) ⚠️ TEMPORARY
+- Uses standard SQLite API for rapid development
+- SQL statements for collection management
+- Foundation for Phase 2 migration
+
+### Phase 2: B-tree Direct Access (Production Target) 🎯
+- **Eliminate SQL engine entirely** - Direct `sqlite3Btree*()` API usage
+- **75% binary size reduction** - No SQL parser/compiler/tokenizer
+- **Better performance** - No SQL compilation overhead
+- **Custom storage layouts** - Optimized for BSON document access
+
+### Phase 3: Advanced Features
+- Secondary B-tree indexes for field queries
+- MongoDB-style compound indexes
+- Query optimization and caching
+
+## 🏗️ Technical Implementation
+
+### Memory Management
+- **Standard malloc/free** - No conflicts with SQLite/libbson internal allocators
+- **Clean separation** - Each library manages its own memory
+- **Error-safe cleanup** - Proper resource deallocation on failures
+
+### Storage Design
+```
+Collections → SQLite Tables (Phase 1) → Direct B-trees (Phase 2)
+Documents → BLOB storage → Optimized BSON layout
+Indexes → SQLite indexes → Secondary B-trees
+```
+
+## 🧪 Testing
+
+```bash
+# Build and test
+mkdir build && cd build
+cmake ..
+make test_mongolite
+./test_mongolite
+
+# Run all tests
+ctest -R mongolite_test
+```
+
+**All tests currently passing** ✅
+- Database open/close operations
+- Collection creation, existence, and deletion
+- Error handling and edge cases
+- Memory management and cleanup
+
+## 📦 Dependencies
+
+### Current (Development)
+- **SQLite 3 Source** - Full SQLite for prototyping (temporary)
+- **Standard C Libraries** - malloc, stdio, string handling
+
+### Future (Production)
+- **SQLite B-tree Engine Only** - Minimal SQLite components
+- **MongoDB libbson** - BSON document handling
+- **~75% size reduction** from eliminating SQL engine
+
+## 🎖️ Key Features Implemented
+
+- ✅ **File-based storage** - Single `.mlite` database files
+- ✅ **Collection management** - Create, drop, check existence
+- ✅ **Idempotent operations** - Safe to call create/drop multiple times
+- ✅ **Error handling** - Proper error codes and messages
+- ✅ **Memory safety** - No leaks, proper cleanup
+- ✅ **SQLite integration** - Leverages proven storage engine
+
+## 📋 Usage Example (Current)
+
+```c
+#include "mongolite.h"
+
+int main() {
+    mlite_db_t *db;
+    
+    // Open database file
+    if (mlite_open("app.mlite", &db) != 0) {
+        printf("Failed to open database\n");
+        return 1;
+    }
+    
+    // Create user collection
+    if (mlite_collection_create(db, "users") != 0) {
+        printf("Error: %s\n", mlite_errmsg(db));
+        mlite_close(db);
+        return 1;
+    }
+    
+    // Verify collection exists
+    if (mlite_collection_exists(db, "users")) {
+        printf("Users collection ready for documents!\n");
+    }
+    
+    // Close database
+    mlite_close(db);
+    return 0;
+}
+```
+
+## 🔮 Roadmap
+
+1. **Phase 2A**: BSON document operations (insert, find, update, delete)
+2. **Phase 2B**: Query filtering and cursor-based iteration  
+3. **Phase 3A**: Migration to direct B-tree API (eliminate SQL)
+4. **Phase 3B**: Field indexing and query optimization
+5. **Phase 4**: Performance benchmarking and embedded optimization
+
+---
+
+**MongoLite** - Bringing MongoDB's document model to embedded systems with SQLite's reliability and minimal footprint.
