@@ -7,6 +7,7 @@
 # Dependencies (source repositories)
 deps/*
 !/deps/
+_deps/
 
 build/*
 !/build/

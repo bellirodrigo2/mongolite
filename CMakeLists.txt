@@ -23,6 +23,20 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(sqlite_source)
 
+# Fetch MongoDB C driver source code
+FetchContent_Declare(
+    mongo_c_driver
+    GIT_REPOSITORY https://github.com/mongodb/mongo-c-driver.git
+    GIT_TAG master
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/mongo-c-driver
+)
+
+FetchContent_MakeAvailable(mongo_c_driver)
+
+# Set MongoDB C driver paths
+set(MONGO_C_DRIVER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/mongo-c-driver)
+set(LIBBSON_DIR ${MONGO_C_DRIVER_DIR}/src/libbson)
+
 # Use the built SQLite source with all headers generated
 set(SQLITE_BUILD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/sqlite-src)
 
@@ -67,6 +81,23 @@ target_include_directories(sqlite3 PUBLIC
     ${SQLITE_BUILD_DIR}          # Generated amalgamation headers
     ${SQLITE_BUILD_DIR}/tsrc     # Processed source files
     ${SQLITE_BUILD_DIR}/src      # Original source headers
+)
+
+# Create mongolite library
+add_library(mongolite STATIC
+    src/mongolite.c
+)
+
+# Link mongolite with required libraries
+target_link_libraries(mongolite PUBLIC 
+    sqlite3
+)
+
+# Include directories for mongolite
+target_include_directories(mongolite PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${LIBBSON_DIR}/src/bson        # libbson headers
+    ${MONGO_C_DRIVER_DIR}/src      # MongoDB C driver headers
 )
 
 # Test executables
