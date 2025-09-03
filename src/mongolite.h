@@ -18,6 +18,9 @@ extern "C" {
 typedef struct mlite_db mlite_db_t;
 typedef struct mlite_cursor mlite_cursor_t;
 
+// type conversion
+typedef bson_t (*convert_to_bson)(void *);
+
 // Open flags (similar to sqlite3)
 #define MLITE_OPEN_READWRITE    0x00000002
 #define MLITE_OPEN_CREATE       0x00000004
@@ -37,9 +40,24 @@ bool mlite_collection_exists(mlite_db_t *db, const char *collection_name);
 int mlite_insert_one(mlite_db_t *db, const char *collection_name, 
                      const bson_t *doc, bson_error_t *error);
 
+int mlite_insert_one_any(mlite_db_t *db, const char *collection_name, 
+                     const void *doc, bson_error_t *error, convert_to_bson func);
+
+int mlite_insert_one_jsonstr(mlite_db_t *db, const char *collection_name, 
+                     const char *doc, bson_error_t *error);
+
+
 int mlite_insert_many(mlite_db_t *db, const char *collection_name,
                       const bson_t **docs, size_t n_docs, 
                       bson_error_t *error);
+
+int mlite_insert_many_any(mlite_db_t *db, const char *collection_name,
+                           const void **docs, size_t n_docs,
+                           bson_error_t *error, convert_to_bson func);
+
+int mlite_insert_many_jsonstr(mlite_db_t *db, const char *collection_name,
+                               const char **docs, size_t n_docs,
+                               bson_error_t *error);
 
 int mlite_update_one(mlite_db_t *db, const char *collection_name,
                      const bson_t *filter, const bson_t *update,
