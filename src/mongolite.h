@@ -4,11 +4,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
-// #include <bson/bson.h>  // TODO: Add BSON support later
-
-// Temporary BSON placeholders
-typedef struct bson bson_t;
-typedef struct bson_error bson_error_t;
+#include <bson/bson.h>  // BSON support now included
 
 #ifdef __cplusplus
 extern "C" {
@@ -20,6 +16,12 @@ typedef struct mlite_cursor mlite_cursor_t;
 
 // type conversion
 typedef bson_t (*convert_to_bson)(void *);
+
+// Return codes
+#define MLITE_OK           0
+#define MLITE_ERROR        1
+#define MLITE_CANTOPEN     14
+#define MLITE_NOMEM        7
 
 // Open flags (similar to sqlite3)
 #define MLITE_OPEN_READWRITE    0x00000002
@@ -80,6 +82,9 @@ int mlite_delete_many(mlite_db_t *db, const char *collection_name,
 // Query operations
 mlite_cursor_t* mlite_find(mlite_db_t *db, const char *collection_name,
                           const bson_t *filter, const bson_t *opts);
+
+bson_t* mlite_find_one(mlite_db_t *db, const char *collection_name,
+                       const bson_t *filter, const bson_t *opts);
 
 // Cursor operations  
 bool mlite_cursor_next(mlite_cursor_t *cursor, const bson_t **doc);

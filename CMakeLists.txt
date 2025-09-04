@@ -89,16 +89,22 @@ target_include_directories(sqlite3 PUBLIC
 # Create mongolite library
 add_library(mongolite STATIC
     src/mongolite.c
+    src/mongolite_query.c
 )
+
+# Use the bundled libbson from mongo-c-driver
+# This approach leverages the properly configured libbson that comes with mongo-c-driver
 
 # Link mongolite with required libraries
 target_link_libraries(mongolite PUBLIC 
     sqlite3
+    bson_static  # Use the built libbson from mongo-c-driver
 )
 
 # Include directories for mongolite
 target_include_directories(mongolite PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${LIBBSON_DIR}/src
 )
 
 # Test executables
@@ -111,8 +117,40 @@ target_link_libraries(test_btree PRIVATE sqlite3)
 add_executable(test_mongolite tests/test_mongolite.c)
 target_link_libraries(test_mongolite PRIVATE mongolite sqlite3)
 
+add_executable(test_insert_one tests/test_insert_one.c)
+target_link_libraries(test_insert_one PRIVATE mongolite sqlite3 bson_static)
+
+add_executable(test_json_insert tests/test_json_insert.c)
+target_link_libraries(test_json_insert PRIVATE mongolite sqlite3 bson_static)
+
+add_executable(test_insert_many tests/test_insert_many.c)
+target_link_libraries(test_insert_many PRIVATE mongolite sqlite3 bson_static)
+
+add_executable(test_find tests/test_find.c)
+target_link_libraries(test_find PRIVATE mongolite sqlite3 bson_static)
+
+add_executable(test_query_ops tests/test_query_ops.c)
+target_link_libraries(test_query_ops PRIVATE mongolite sqlite3 bson_static)
+
+add_executable(test_mongodb_precedence tests/test_mongodb_precedence.c)
+target_link_libraries(test_mongodb_precedence PRIVATE mongolite sqlite3 bson_static)
+
+add_executable(test_array_operators tests/test_array_operators.c)
+target_link_libraries(test_array_operators PRIVATE mongolite sqlite3 bson_static)
+
+add_executable(test_query_operators_unit tests/test_query_operators_unit.c)
+target_link_libraries(test_query_operators_unit PRIVATE mongolite sqlite3 bson_static)
+
 # Enable testing
 enable_testing()
 add_test(NAME basic_sqlite_test COMMAND test_sqlite)
 add_test(NAME btree_test COMMAND test_btree)
 add_test(NAME mongolite_test COMMAND test_mongolite)
+add_test(NAME insert_one_test COMMAND test_insert_one)
+add_test(NAME json_insert_test COMMAND test_json_insert)
+add_test(NAME insert_many_test COMMAND test_insert_many)
+add_test(NAME find_test COMMAND test_find)
+add_test(NAME query_ops_test COMMAND test_query_ops)
+add_test(NAME mongodb_precedence_test COMMAND test_mongodb_precedence)
+add_test(NAME array_operators_test COMMAND test_array_operators)
+add_test(NAME query_operators_unit_test COMMAND test_query_operators_unit)
