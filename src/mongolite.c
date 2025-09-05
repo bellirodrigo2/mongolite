@@ -64,13 +64,7 @@ int mlite_open_v2(const char *filename, mlite_db_t **db, int flags) {
     }
 
     // Create metadata table for collections if it doesn't exist
-    const char *create_metadata_sql = 
-        "CREATE TABLE IF NOT EXISTS _mlite_collections ("
-        "name TEXT PRIMARY KEY, "
-        "created_at INTEGER DEFAULT (strftime('%s','now'))"
-        ")";
-    
-    rc = sqlite3_exec(database->sqlite_db, create_metadata_sql, NULL, NULL, NULL);
+    rc = mlite_sql_init_schema(database->sqlite_db);
     if (rc != SQLITE_OK) {
         database->errcode = rc;
         database->errmsg = strdup(sqlite3_errmsg(database->sqlite_db));
@@ -145,24 +139,7 @@ int mlite_collection_create(mlite_db_t *db, const char *collection_name) {
     }
 
     // Create collection table: collection_<name> (_id TEXT PRIMARY KEY, document BLOB)
-    char *sql = NULL;
-    int sql_len = snprintf(NULL, 0, 
-        "CREATE TABLE collection_%s (_id TEXT PRIMARY KEY, document BLOB NOT NULL)", 
-        collection_name);
-    
-    sql = malloc(sql_len + 1);
-    if (!sql) {
-        db->errcode = MLITE_NOMEM;
-        return MLITE_NOMEM;
-    }
-    
-    snprintf(sql, sql_len + 1, 
-        "CREATE TABLE collection_%s (_id TEXT PRIMARY KEY, document BLOB NOT NULL)", 
-        collection_name);
-
-    int rc = sqlite3_exec(db->sqlite_db, sql, NULL, NULL, NULL);
-    free(sql);
-
+    int rc = mlite_sql_create_collection_table(db->sqlite_db, collection_name);
     if (rc != SQLITE_OK) {
         db->errcode = rc;
         db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
@@ -170,29 +147,9 @@ int mlite_collection_create(mlite_db_t *db, const char *collection_name) {
     }
 
     // Add entry to metadata table
-    const char *insert_metadata_sql = 
-        "INSERT INTO _mlite_collections (name, created_at) VALUES (?, strftime('%s','now'))";
-    
-    sqlite3_stmt *stmt;
-    rc = sqlite3_prepare_v2(db->sqlite_db, insert_metadata_sql, -1, &stmt, NULL);
+    rc = mlite_sql_add_collection_metadata(db->sqlite_db, collection_name);
+
     if (rc != SQLITE_OK) {
-        db->errcode = rc;
-        db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
-        return MLITE_ERROR;
-    }
-
-    rc = sqlite3_bind_text(stmt, 1, collection_name, -1, SQLITE_STATIC);
-    if (rc != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        db->errcode = rc;
-        db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
-        return MLITE_ERROR;
-    }
-
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    if (rc != SQLITE_DONE) {
         db->errcode = rc;
         db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
         return MLITE_ERROR;
@@ -219,20 +176,7 @@ int mlite_collection_drop(mlite_db_t *db, const char *collection_name) {
     }
 
     // Drop collection table
-    char *sql = NULL;
-    int sql_len = snprintf(NULL, 0, "DROP TABLE collection_%s", collection_name);
-    
-    sql = malloc(sql_len + 1);
-    if (!sql) {
-        db->errcode = MLITE_NOMEM;
-        return MLITE_NOMEM;
-    }
-    
-    snprintf(sql, sql_len + 1, "DROP TABLE collection_%s", collection_name);
-
-    int rc = sqlite3_exec(db->sqlite_db, sql, NULL, NULL, NULL);
-    free(sql);
-
+    int rc = mlite_sql_drop_collection_table(db->sqlite_db, collection_name);
     if (rc != SQLITE_OK) {
         db->errcode = rc;
         db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
@@ -240,28 +184,9 @@ int mlite_collection_drop(mlite_db_t *db, const char *collection_name) {
     }
 
     // Remove entry from metadata table
-    const char *delete_metadata_sql = "DELETE FROM _mlite_collections WHERE name = ?";
-    
-    sqlite3_stmt *stmt;
-    rc = sqlite3_prepare_v2(db->sqlite_db, delete_metadata_sql, -1, &stmt, NULL);
+    rc = mlite_sql_remove_collection_metadata(db->sqlite_db, collection_name);
+
     if (rc != SQLITE_OK) {
-        db->errcode = rc;
-        db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
-        return MLITE_ERROR;
-    }
-
-    rc = sqlite3_bind_text(stmt, 1, collection_name, -1, SQLITE_STATIC);
-    if (rc != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        db->errcode = rc;
-        db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
-        return MLITE_ERROR;
-    }
-
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    if (rc != SQLITE_DONE) {
         db->errcode = rc;
         db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
         return MLITE_ERROR;
@@ -275,24 +200,7 @@ bool mlite_collection_exists(mlite_db_t *db, const char *collection_name) {
         return false;
     }
 
-    const char *check_sql = "SELECT 1 FROM _mlite_collections WHERE name = ? LIMIT 1";
-    
-    sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(db->sqlite_db, check_sql, -1, &stmt, NULL);
-    if (rc != SQLITE_OK) {
-        return false;
-    }
-
-    rc = sqlite3_bind_text(stmt, 1, collection_name, -1, SQLITE_STATIC);
-    if (rc != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        return false;
-    }
-
-    rc = sqlite3_step(stmt);
-    sqlite3_finalize(stmt);
-
-    return (rc == SQLITE_ROW);
+    return mlite_sql_collection_exists(db->sqlite_db, collection_name);
 }
 
 // Document operations
@@ -376,26 +284,8 @@ int mlite_insert_one(mlite_db_t *db, const char *collection_name,
     }
 
     // Prepare SQL statement for insertion
-    char *sql = NULL;
-    int sql_len = snprintf(NULL, 0, "INSERT INTO collection_%s (_id, document) VALUES (?, ?)", collection_name);
-    sql = malloc(sql_len + 1);
-    if (!sql) {
-        if (doc_to_insert) {
-            bson_destroy(doc_to_insert);
-        }
-        if (error) {
-            bson_set_error(error, BSON_ERROR_INVALID, 7, "Memory allocation failed");
-        }
-        db->errcode = MLITE_NOMEM;
-        return MLITE_NOMEM;
-    }
-    
-    snprintf(sql, sql_len + 1, "INSERT INTO collection_%s (_id, document) VALUES (?, ?)", collection_name);
-
     sqlite3_stmt *stmt;
-    int rc = sqlite3_prepare_v2(db->sqlite_db, sql, -1, &stmt, NULL);
-    free(sql);
-    
+    int rc = mlite_sql_prepare_document_insert(db->sqlite_db, collection_name, &stmt);
     if (rc != SQLITE_OK) {
         if (doc_to_insert) {
             bson_destroy(doc_to_insert);
@@ -427,41 +317,11 @@ int mlite_insert_one(mlite_db_t *db, const char *collection_name,
         return MLITE_ERROR;
     }
 
-    // Bind _id string
-    rc = sqlite3_bind_text(stmt, 1, oid_str, -1, SQLITE_STATIC);
-    if (rc != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        if (doc_to_insert) {
-            bson_destroy(doc_to_insert);
-        }
-        if (error) {
-            bson_set_error(error, BSON_ERROR_INVALID, 10, "Failed to bind _id: %s", sqlite3_errmsg(db->sqlite_db));
-        }
-        db->errcode = rc;
-        db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
-        return MLITE_ERROR;
-    }
-
-    // Bind BSON document as BLOB
+    // Execute document insert
     const uint8_t *bson_data = bson_get_data(final_doc);
     uint32_t bson_len = final_doc->len;
     
-    rc = sqlite3_bind_blob(stmt, 2, bson_data, bson_len, SQLITE_STATIC);
-    if (rc != SQLITE_OK) {
-        sqlite3_finalize(stmt);
-        if (doc_to_insert) {
-            bson_destroy(doc_to_insert);
-        }
-        if (error) {
-            bson_set_error(error, BSON_ERROR_INVALID, 11, "Failed to bind document: %s", sqlite3_errmsg(db->sqlite_db));
-        }
-        db->errcode = rc;
-        db->errmsg = strdup(sqlite3_errmsg(db->sqlite_db));
-        return MLITE_ERROR;
-    }
-
-    // Execute the statement
-    rc = sqlite3_step(stmt);
+    rc = mlite_sql_insert_document(stmt, oid_str, bson_data, bson_len);
     sqlite3_finalize(stmt);
 
     // Clean up document copy if created
@@ -585,7 +445,7 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
     }
 
     // Start transaction for bulk operation
-    int rc = sqlite3_exec(db->sqlite_db, "BEGIN TRANSACTION", NULL, NULL, NULL);
+    int rc = mlite_sql_begin_transaction(db->sqlite_db);
     if (rc != SQLITE_OK) {
         if (error) {
             bson_set_error(error, BSON_ERROR_INVALID, 202, "Failed to begin transaction: %s", sqlite3_errmsg(db->sqlite_db));
@@ -596,25 +456,10 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
     }
 
     // Prepare SQL statement once for better performance
-    char *sql = NULL;
-    int sql_len = snprintf(NULL, 0, "INSERT INTO collection_%s (_id, document) VALUES (?, ?)", collection_name);
-    sql = malloc(sql_len + 1);
-    if (!sql) {
-        sqlite3_exec(db->sqlite_db, "ROLLBACK", NULL, NULL, NULL);
-        if (error) {
-            bson_set_error(error, BSON_ERROR_INVALID, 203, "Memory allocation failed");
-        }
-        db->errcode = MLITE_NOMEM;
-        return MLITE_NOMEM;
-    }
-    snprintf(sql, sql_len + 1, "INSERT INTO collection_%s (_id, document) VALUES (?, ?)", collection_name);
-
     sqlite3_stmt *stmt;
-    rc = sqlite3_prepare_v2(db->sqlite_db, sql, -1, &stmt, NULL);
-    free(sql);
-    
+    rc = mlite_sql_prepare_document_insert(db->sqlite_db, collection_name, &stmt);
     if (rc != SQLITE_OK) {
-        sqlite3_exec(db->sqlite_db, "ROLLBACK", NULL, NULL, NULL);
+        mlite_sql_rollback_transaction(db->sqlite_db);
         if (error) {
             bson_set_error(error, BSON_ERROR_INVALID, 204, "Failed to prepare statement: %s", sqlite3_errmsg(db->sqlite_db));
         }
@@ -629,7 +474,7 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
         
         if (!doc) {
             sqlite3_finalize(stmt);
-            sqlite3_exec(db->sqlite_db, "ROLLBACK", NULL, NULL, NULL);
+            mlite_sql_rollback_transaction(db->sqlite_db);
             if (error) {
                 bson_set_error(error, BSON_ERROR_INVALID, 205, "Document at index %zu is NULL", i);
             }
@@ -641,7 +486,7 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
         size_t offset;
         if (!bson_validate(doc, BSON_VALIDATE_NONE, &offset)) {
             sqlite3_finalize(stmt);
-            sqlite3_exec(db->sqlite_db, "ROLLBACK", NULL, NULL, NULL);
+            mlite_sql_rollback_transaction(db->sqlite_db);
             if (error) {
                 bson_set_error(error, BSON_ERROR_INVALID, 206, "Invalid BSON document at index %zu, offset %zu", i, offset);
             }
@@ -662,7 +507,7 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
             if (!doc_to_insert || !bson_append_oid(doc_to_insert, "_id", -1, &oid)) {
                 if (doc_to_insert) bson_destroy(doc_to_insert);
                 sqlite3_finalize(stmt);
-                sqlite3_exec(db->sqlite_db, "ROLLBACK", NULL, NULL, NULL);
+                mlite_sql_rollback_transaction(db->sqlite_db);
                 if (error) {
                     bson_set_error(error, BSON_ERROR_INVALID, 207, "Failed to generate _id for document at index %zu", i);
                 }
@@ -676,7 +521,7 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
             if (bson_iter_init(&iter, doc) && bson_iter_find(&iter, "_id")) {
                 if (!BSON_ITER_HOLDS_OID(&iter)) {
                     sqlite3_finalize(stmt);
-                    sqlite3_exec(db->sqlite_db, "ROLLBACK", NULL, NULL, NULL);
+                    mlite_sql_rollback_transaction(db->sqlite_db);
                     if (error) {
                         bson_set_error(error, BSON_ERROR_INVALID, 208, "_id field must be ObjectId in document at index %zu", i);
                     }
@@ -695,7 +540,7 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
         } else {
             if (doc_to_insert) bson_destroy(doc_to_insert);
             sqlite3_finalize(stmt);
-            sqlite3_exec(db->sqlite_db, "ROLLBACK", NULL, NULL, NULL);
+            mlite_sql_rollback_transaction(db->sqlite_db);
             if (error) {
                 bson_set_error(error, BSON_ERROR_INVALID, 209, "Failed to extract _id from document at index %zu", i);
             }
@@ -703,16 +548,10 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
             return MLITE_ERROR;
         }
 
-        // Bind parameters
-        sqlite3_reset(stmt);
-        sqlite3_bind_text(stmt, 1, oid_str, -1, SQLITE_STATIC);
-        
+        // Execute insert
         const uint8_t *bson_data = bson_get_data(final_doc);
         uint32_t bson_len = final_doc->len;
-        sqlite3_bind_blob(stmt, 2, bson_data, bson_len, SQLITE_STATIC);
-
-        // Execute insert
-        rc = sqlite3_step(stmt);
+        rc = mlite_sql_insert_document(stmt, oid_str, bson_data, bson_len);
         
         // Clean up document copy if created
         if (doc_to_insert) {
@@ -722,7 +561,7 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
 
         if (rc != SQLITE_DONE) {
             sqlite3_finalize(stmt);
-            sqlite3_exec(db->sqlite_db, "ROLLBACK", NULL, NULL, NULL);
+            mlite_sql_rollback_transaction(db->sqlite_db);
             if (error) {
                 if (rc == SQLITE_CONSTRAINT) {
                     bson_set_error(error, BSON_ERROR_INVALID, 210, "Duplicate _id in document at index %zu", i);
@@ -740,9 +579,9 @@ int mlite_insert_many(mlite_db_t *db, const char *collection_name,
     sqlite3_finalize(stmt);
 
     // Commit transaction
-    rc = sqlite3_exec(db->sqlite_db, "COMMIT", NULL, NULL, NULL);
+    rc = mlite_sql_commit_transaction(db->sqlite_db);
     if (rc != SQLITE_OK) {
-        sqlite3_exec(db->sqlite_db, "ROLLBACK", NULL, NULL, NULL);
+        mlite_sql_rollback_transaction(db->sqlite_db);
         if (error) {
             bson_set_error(error, BSON_ERROR_INVALID, 212, "Failed to commit transaction: %s", sqlite3_errmsg(db->sqlite_db));
         }

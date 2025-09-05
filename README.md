@@ -38,10 +38,10 @@ A MongoDB-like document database using SQLite's storage engine, designed for emb
 
 ### MongoDB Query Operators - COMPLETE ✅
 - [x] **Comparison**: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte` - Full numeric and string comparison
-- [x] **Array**: `$in`, `$nin`, `$all`, `$size` - Array membership and size operations
+- [x] **Array**: `$in`, `$nin`, `$all`, `$size`, `$elemMatch` - Array membership, size operations, and document matching within arrays
 - [x] **Logical**: `$and`, `$or`, `$not`, `$nor` - Complex logical expressions
 - [x] **Element**: `$exists`, `$type` - Field existence and BSON type checking  
-- [x] **Array**: `$all`, `$size` - Array element matching and size validation
+- [x] **Mathematical**: `$mod` - Modulo operations with MongoDB-compatible behavior
 - [x] **Pattern**: `$regex` - POSIX regular expression matching with MongoDB-style options
 
 ### What Works Now
@@ -146,10 +146,23 @@ CREATE TABLE _mlite_collections (
 - [ ] **Update Operators**: `$set`, `$unset`, `$inc`, `$push`, `$addToSet` support
 - [ ] **Array Update Operations**: `$pull`, `$pullAll`, `$pop` support
 
-### Missing Query Operators (Minor Additions)
-- [ ] `$mod` - Modulo operation: `{age: {$mod: [5, 0]}}`
-- [ ] `$elemMatch` - Array element matching: `{scores: {$elemMatch: {$gt: 80}}}`
-- [ ] Complete unit test coverage for `$gte`, `$lt`, `$lte`, `$nin` (implemented but not tested)
+### Query Operators Status - ALL BASIC OPERATORS COMPLETE ✅
+- [x] ~~`$mod` - Modulo operation~~ **COMPLETED** ✅  
+- [x] ~~`$elemMatch` - Array element matching: `{scores: {$elemMatch: {$gt: 80}}}`~~ **COMPLETED** ✅
+- [x] **Complete unit test coverage for all implemented operators** ✅
+
+### Advanced Query Operators (Not Yet Implemented)
+These MongoDB operators are not implemented and represent future enhancement opportunities:
+- [ ] **`$expr`** - Aggregation expressions in query context: `{$expr: {$gt: ["$spent", "$budget"]}}`
+- [ ] **`$text`** - Full-text search with text indexing: `{$text: {$search: "coffee"}}`
+- [ ] **`$jsonSchema`** - JSON Schema validation: `{$jsonSchema: {properties: {...}}}`
+- [ ] **`$geoWithin`** - Geospatial queries within shapes
+- [ ] **`$near`** - Geospatial proximity queries
+- [ ] **`$geoIntersects`** - Geospatial intersection queries
+- [ ] **Array position operators**: `$[<identifier>]`, `$[]` for positional updates
+- [ ] **`$slice`** - Array projection operator for limiting returned array elements
+
+**Current Implementation**: **18/26** Core MongoDB query operators (69% coverage of essential operators)
 
 ### Indexing Strategy (Critical Design Decision)
 **Current Assessment**: Multiple viable paths identified
@@ -182,6 +195,7 @@ BinaryData → ObjectId → Boolean → Date → Timestamp → Regex → MaxKey
 
 ### Phase 1: SQL-based Prototype (Current) ⚠️ TEMPORARY
 - Uses standard SQLite API for rapid development
+- **SQL Abstraction Layer**: All SQL operations isolated in `mongolite_sql.c` for easy migration
 - SQL statements for collection management
 - Foundation for Phase 2 migration
 
@@ -202,6 +216,12 @@ BinaryData → ObjectId → Boolean → Date → Timestamp → Regex → MaxKey
 - **Standard malloc/free** - No conflicts with SQLite/libbson internal allocators
 - **Clean separation** - Each library manages its own memory
 - **Error-safe cleanup** - Proper resource deallocation on failures
+
+### SQL Abstraction Layer (Migration-Ready Architecture)
+- **Isolated SQL operations** in `mongolite_sql.c` - All SQLite API calls encapsulated
+- **Clean interface** - Functions like `mlite_sql_insert_document()`, `mlite_sql_query_step()`
+- **B-tree migration ready** - Replace SQL functions with direct B-tree API calls
+- **Maintainable** - Core logic in `mongolite.c` remains unchanged during migration
 
 ### Storage Design
 ```
@@ -256,7 +276,7 @@ ctest -E "mongoc"
 - **Query Operators**: 80+ test cases (comparison, logical, array operations)
 - **Type Precedence**: 30+ test cases (cross-type comparisons, MongoDB compliance)
 - **Array Operations**: 45+ test cases (array-specific operators and edge cases)
-- **Unit Tests**: 70+ focused test cases for individual operator validation
+- **Unit Tests**: 110+ focused test cases for comprehensive operator validation (including $elemMatch)
 
 ## 📦 Dependencies
 
@@ -276,7 +296,7 @@ ctest -E "mongoc"
 - ✅ **File-based storage** - Single `.mlite` database files with SQLite reliability
 - ✅ **Collection management** - Create, drop, check existence with idempotent operations
 - ✅ **Document operations** - Insert (single/bulk), find, count with full BSON support
-- ✅ **MongoDB query language** - 15+ query operators with full MongoDB compatibility
+- ✅ **MongoDB query language** - 18 query operators with full MongoDB compatibility
 - ✅ **Field projection** - Return only specified fields to minimize memory usage
 - ✅ **Cursor-based iteration** - Memory-efficient document streaming with proper cleanup
 - ✅ **Cross-type comparisons** - MongoDB-compliant BSON type precedence ordering
@@ -322,17 +342,18 @@ int main() {
 
 ## 🔮 Roadmap
 
-### **Phase 3A**: Document Modification Operations (Next - 3-4 weeks)  
+### **Phase 3A**: SQL to B-tree Migration (Next Priority - 4-6 weeks) 🎯
+1. **Replace SQL abstraction layer** - Migrate `mongolite_sql.c` functions to direct B-tree API calls
+2. **Collection management** - Direct B-tree table creation and management
+3. **Document storage** - Optimized BSON storage layout for B-tree access
+4. **Query engine updates** - Update query operators to work with B-tree cursors
+5. **Performance validation** - Ensure improved performance and reduced binary size
+
+### **Phase 3B**: Document Modification Operations (3-4 weeks)  
 1. **Update operations** - `mlite_update_one()`, `mlite_update_many()`
 2. **Delete operations** - `mlite_delete_one()`, `mlite_delete_many()`
 3. **Update operators** - `$set`, `$unset`, `$inc`, `$push`, `$addToSet` support
 4. **Array update operations** - `$pull`, `$pullAll`, `$pop` support
-
-### **Phase 3B**: Query Completeness (1-2 weeks)
-1. **Missing operators** - `$mod`, `$elemMatch` implementation
-2. **Test coverage** - Unit tests for `$gte`, `$lt`, `$lte`, `$nin`
-3. **Advanced regex** - Additional regex flags and options
-4. **Query optimization** - Basic query planning and execution optimization
 
 ### **Phase 4**: Indexing Strategy Decision Point (6-12 weeks)
 **Current Status**: All query operations work via full collection scans

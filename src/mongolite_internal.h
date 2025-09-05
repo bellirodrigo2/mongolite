@@ -48,4 +48,28 @@ bool mlite_cursor_next(mlite_cursor_t *cursor, const bson_t **doc);
 bool mlite_cursor_error(mlite_cursor_t *cursor, bson_error_t *error);
 void mlite_cursor_destroy(mlite_cursor_t *cursor);
 
+// SQL abstraction layer (implemented in mongolite_sql.c)
+// Schema operations
+int mlite_sql_init_schema(sqlite3 *db);
+
+// Collection operations  
+int mlite_sql_create_collection_table(sqlite3 *db, const char *collection_name);
+int mlite_sql_add_collection_metadata(sqlite3 *db, const char *collection_name);
+int mlite_sql_drop_collection_table(sqlite3 *db, const char *collection_name);
+int mlite_sql_remove_collection_metadata(sqlite3 *db, const char *collection_name);
+bool mlite_sql_collection_exists(sqlite3 *db, const char *collection_name);
+
+// Document operations
+int mlite_sql_prepare_document_insert(sqlite3 *db, const char *collection_name, sqlite3_stmt **stmt);
+int mlite_sql_insert_document(sqlite3_stmt *stmt, const char *oid_str, const uint8_t *bson_data, uint32_t bson_len);
+
+// Transaction operations
+int mlite_sql_begin_transaction(sqlite3 *db);
+int mlite_sql_commit_transaction(sqlite3 *db);
+int mlite_sql_rollback_transaction(sqlite3 *db);
+
+// Query operations
+int mlite_sql_prepare_collection_query(sqlite3 *db, const char *collection_name, sqlite3_stmt **stmt);
+int mlite_sql_query_step(sqlite3_stmt *stmt, const char **oid_str, const void **document_data, int *document_len);
+
 #endif // MONGOLITE_INTERNAL_H

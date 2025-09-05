@@ -23,22 +23,20 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(sqlite_source)
 
-# Fetch MongoDB C driver source code
-FetchContent_Declare(
-    mongo_c_driver
-    GIT_REPOSITORY https://github.com/mongodb/mongo-c-driver.git
-    GIT_TAG master
-    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/mongo-c-driver
-)
-
-FetchContent_MakeAvailable(mongo_c_driver)
-
-# Set MongoDB C driver paths
+# Use existing MongoDB C driver source code for libbson only
 set(MONGO_C_DRIVER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/mongo-c-driver)
 set(LIBBSON_DIR ${MONGO_C_DRIVER_DIR}/src/libbson)
 
-# TODO: Build libbson from source later
-# add_subdirectory(${MONGO_C_DRIVER_DIR} mongo-c-driver EXCLUDE_FROM_ALL)
+# Configure mongo-c-driver to build only libbson (disable mongoc)
+set(ENABLE_MONGOC OFF CACHE BOOL "Disable libmongoc build" FORCE)
+set(ENABLE_TESTS OFF CACHE BOOL "Disable mongo-c-driver tests" FORCE)
+set(ENABLE_EXAMPLES OFF CACHE BOOL "Disable mongo-c-driver examples" FORCE)
+set(ENABLE_MAN_PAGES OFF CACHE BOOL "Disable mongo-c-driver man pages" FORCE)
+set(ENABLE_HTML_DOCS OFF CACHE BOOL "Disable mongo-c-driver HTML docs" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "Disable CTest for mongo-c-driver" FORCE)
+
+# Add mongo-c-driver subdirectory to build only libbson
+add_subdirectory(${MONGO_C_DRIVER_DIR} mongo-c-driver EXCLUDE_FROM_ALL)
 
 # Use the built SQLite source with all headers generated
 set(SQLITE_BUILD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deps/sqlite-src)
@@ -90,21 +88,18 @@ target_include_directories(sqlite3 PUBLIC
 add_library(mongolite STATIC
     src/mongolite.c
     src/mongolite_query.c
+    src/mongolite_sql.c
 )
-
-# Use the bundled libbson from mongo-c-driver
-# This approach leverages the properly configured libbson that comes with mongo-c-driver
 
 # Link mongolite with required libraries
 target_link_libraries(mongolite PUBLIC 
     sqlite3
-    bson_static  # Use the built libbson from mongo-c-driver
+    bson_static  # Official libbson static target from mongo-c-driver
 )
 
 # Include directories for mongolite
 target_include_directories(mongolite PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${LIBBSON_DIR}/src
 )
 
 # Test executables

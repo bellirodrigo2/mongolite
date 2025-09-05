@@ -104,6 +104,112 @@ void test_op_gt() {
     printf("OP_GT tests passed!\n");
 }
 
+// Test $gte operator
+void test_op_gte() {
+    printf("Testing OP_GTE...\n");
+    
+    // Test 1: Greater than - should pass
+    assert(test_operator("{\"age\": 30}", "age", "$gte", "25") == true);
+    
+    // Test 2: Equal - should pass (key difference from $gt)
+    assert(test_operator("{\"age\": 25}", "age", "$gte", "25") == true);
+    
+    // Test 3: Less than - should fail
+    assert(test_operator("{\"age\": 20}", "age", "$gte", "25") == false);
+    
+    // Test 4: String comparison - should work
+    assert(test_operator("{\"name\": \"Bob\"}", "name", "$gte", "\"Alice\"") == true);
+    
+    // Test 5: Equal strings - should pass
+    assert(test_operator("{\"name\": \"Alice\"}", "name", "$gte", "\"Alice\"") == true);
+    
+    // Test 6: Cross-type comparison with numbers
+    assert(test_operator("{\"value\": 42.5}", "value", "$gte", "42") == true);
+    
+    printf("OP_GTE tests passed!\n");
+}
+
+// Test $lt operator
+void test_op_lt() {
+    printf("Testing OP_LT...\n");
+    
+    // Test 1: Less than - should pass
+    assert(test_operator("{\"age\": 20}", "age", "$lt", "25") == true);
+    
+    // Test 2: Equal - should fail
+    assert(test_operator("{\"age\": 25}", "age", "$lt", "25") == false);
+    
+    // Test 3: Greater than - should fail
+    assert(test_operator("{\"age\": 30}", "age", "$lt", "25") == false);
+    
+    // Test 4: String comparison - should work
+    assert(test_operator("{\"name\": \"Alice\"}", "name", "$lt", "\"Bob\"") == true);
+    
+    // Test 5: Negative numbers
+    assert(test_operator("{\"temp\": -5}", "temp", "$lt", "0") == true);
+    
+    // Test 6: Cross-type comparison with numbers
+    assert(test_operator("{\"value\": 41.5}", "value", "$lt", "42") == true);
+    
+    printf("OP_LT tests passed!\n");
+}
+
+// Test $lte operator
+void test_op_lte() {
+    printf("Testing OP_LTE...\n");
+    
+    // Test 1: Less than - should pass
+    assert(test_operator("{\"age\": 20}", "age", "$lte", "25") == true);
+    
+    // Test 2: Equal - should pass (key difference from $lt)
+    assert(test_operator("{\"age\": 25}", "age", "$lte", "25") == true);
+    
+    // Test 3: Greater than - should fail
+    assert(test_operator("{\"age\": 30}", "age", "$lte", "25") == false);
+    
+    // Test 4: String comparison - should work
+    assert(test_operator("{\"name\": \"Alice\"}", "name", "$lte", "\"Bob\"") == true);
+    
+    // Test 5: Equal strings - should pass
+    assert(test_operator("{\"name\": \"Alice\"}", "name", "$lte", "\"Alice\"") == true);
+    
+    // Test 6: Zero comparison
+    assert(test_operator("{\"balance\": 0}", "balance", "$lte", "0") == true);
+    
+    printf("OP_LTE tests passed!\n");
+}
+
+// Test $nin operator
+void test_op_nin() {
+    printf("Testing OP_NIN...\n");
+    
+    // Test 1: Value not in array - should pass
+    assert(test_operator("{\"name\": \"Charlie\"}", "name", "$nin", "[\"Alice\", \"Bob\"]") == true);
+    
+    // Test 2: Value in array - should fail
+    assert(test_operator("{\"name\": \"Alice\"}", "name", "$nin", "[\"Alice\", \"Bob\"]") == false);
+    
+    // Test 3: Number not in array - should pass
+    assert(test_operator("{\"age\": 40}", "age", "$nin", "[25, 30, 35]") == true);
+    
+    // Test 4: Number in array - should fail
+    assert(test_operator("{\"age\": 25}", "age", "$nin", "[25, 30, 35]") == false);
+    
+    // Test 5: Empty array - should pass (nothing to exclude)
+    assert(test_operator("{\"name\": \"Alice\"}", "name", "$nin", "[]") == true);
+    
+    // Test 6: Single element array - not matching
+    assert(test_operator("{\"status\": \"active\"}", "status", "$nin", "[\"inactive\"]") == true);
+    
+    // Test 7: Single element array - matching
+    assert(test_operator("{\"status\": \"active\"}", "status", "$nin", "[\"active\"]") == false);
+    
+    // Test 8: Mixed types in array
+    assert(test_operator("{\"value\": \"text\"}", "value", "$nin", "[42, true, \"number\"]") == true);
+    
+    printf("OP_NIN tests passed!\n");
+}
+
 // Test $in operator
 void test_op_in() {
     printf("Testing OP_IN...\n");
@@ -342,13 +448,101 @@ void test_op_regex() {
     printf("OP_REGEX tests passed!\n");
 }
 
+// Test $mod operator
+void test_op_mod() {
+    printf("Testing OP_MOD...\n");
+    
+    // Test 1: Simple modulo - divisible by 5 (remainder 0)
+    assert(test_operator("{\"age\": 25}", "age", "$mod", "[5, 0]") == true);
+    
+    // Test 2: Simple modulo - not divisible by 5 
+    assert(test_operator("{\"age\": 23}", "age", "$mod", "[5, 0]") == false);
+    
+    // Test 3: Modulo with remainder 1
+    assert(test_operator("{\"score\": 11}", "score", "$mod", "[10, 1]") == true);
+    
+    // Test 4: Modulo with remainder 1 - should fail
+    assert(test_operator("{\"score\": 12}", "score", "$mod", "[10, 1]") == false);
+    
+    // Test 5: Zero value modulo
+    assert(test_operator("{\"value\": 0}", "value", "$mod", "[5, 0]") == true);
+    
+    // Test 6: Negative numbers - in MongoDB: -10 % 3 = 2 (always non-negative result)
+    assert(test_operator("{\"value\": -10}", "value", "$mod", "[3, 2]") == true);  // -10 % 3 = 2 in MongoDB
+    
+    // Test 7: Large numbers
+    assert(test_operator("{\"id\": 1000}", "id", "$mod", "[7, 6]") == true);  // 1000 % 7 = 6
+    
+    // Test 8: Non-numeric field - should fail
+    assert(test_operator("{\"name\": \"Alice\"}", "name", "$mod", "[5, 0]") == false);
+    
+    // Test 9: Floating point numbers (converted to integers)
+    assert(test_operator("{\"rating\": 4.7}", "rating", "$mod", "[2, 0]") == true);  // int(4.7) = 4, 4 % 2 = 0
+    
+    // Test 10: Different numeric types
+    assert(test_operator("{\"count\": 42}", "count", "$mod", "[6, 0]") == true);  // 42 % 6 = 0
+    
+    printf("OP_MOD tests passed!\n");
+}
+
+// Test $elemMatch operator
+void test_op_elemmatch() {
+    printf("Testing OP_ELEMMATCH...\n");
+    
+    // Test 1: Array of documents - simple field match
+    assert(test_operator("{\"scores\": [{\"subject\": \"math\", \"score\": 80}, {\"subject\": \"english\", \"score\": 90}]}", 
+                        "scores", "$elemMatch", "{\"subject\": \"math\"}") == true);
+    
+    // Test 2: Array of documents - no match
+    assert(test_operator("{\"scores\": [{\"subject\": \"math\", \"score\": 80}, {\"subject\": \"english\", \"score\": 90}]}", 
+                        "scores", "$elemMatch", "{\"subject\": \"science\"}") == false);
+    
+    // Test 3: Array of documents - operator match ($gt)
+    assert(test_operator("{\"scores\": [{\"subject\": \"math\", \"score\": 80}, {\"subject\": \"english\", \"score\": 90}]}", 
+                        "scores", "$elemMatch", "{\"score\": {\"$gt\": 85}}") == true);
+    
+    // Test 4: Array of documents - operator match ($gt) - no match
+    assert(test_operator("{\"scores\": [{\"subject\": \"math\", \"score\": 80}, {\"subject\": \"english\", \"score\": 75}]}", 
+                        "scores", "$elemMatch", "{\"score\": {\"$gt\": 85}}") == false);
+    
+    // Test 5: Array of documents - multiple conditions (AND)
+    assert(test_operator("{\"scores\": [{\"subject\": \"math\", \"score\": 80}, {\"subject\": \"english\", \"score\": 90}]}", 
+                        "scores", "$elemMatch", "{\"subject\": \"english\", \"score\": {\"$gte\": 90}}") == true);
+    
+    // Test 6: Array of scalar values - should handle gracefully
+    assert(test_operator("{\"tags\": [\"red\", \"blue\", \"green\"]}", 
+                        "tags", "$elemMatch", "{\"color\": \"red\"}") == false);
+    
+    // Test 7: Non-array field - should fail
+    assert(test_operator("{\"name\": \"Alice\"}", 
+                        "name", "$elemMatch", "{\"first\": \"Alice\"}") == false);
+    
+    // Test 8: Empty array - should fail
+    assert(test_operator("{\"items\": []}", 
+                        "items", "$elemMatch", "{\"type\": \"book\"}") == false);
+    
+    // Test 9: Array with nested documents - complex match
+    assert(test_operator("{\"products\": [{\"name\": \"laptop\", \"price\": 1000, \"category\": \"electronics\"}, {\"name\": \"book\", \"price\": 20, \"category\": \"education\"}]}", 
+                        "products", "$elemMatch", "{\"category\": \"electronics\", \"price\": {\"$gte\": 500}}") == true);
+    
+    // Test 10: Array with nested documents - no complex match
+    assert(test_operator("{\"products\": [{\"name\": \"laptop\", \"price\": 300, \"category\": \"electronics\"}, {\"name\": \"book\", \"price\": 20, \"category\": \"education\"}]}", 
+                        "products", "$elemMatch", "{\"category\": \"electronics\", \"price\": {\"$gte\": 500}}") == false);
+    
+    printf("OP_ELEMMATCH tests passed!\n");
+}
+
 int main() {
     printf("Running MongoDB query operator unit tests...\n\n");
     
     test_op_eq();
     test_op_ne();
     test_op_gt();
+    test_op_gte();
+    test_op_lt();
+    test_op_lte();
     test_op_in();
+    test_op_nin();
     test_op_exists();
     // test_op_type(); // Skipped due to JSON->BSON type conversion complexity
     test_op_all();
@@ -358,6 +552,8 @@ int main() {
     test_op_not();
     test_op_nor();
     test_op_regex();  // Re-enabled for debugging
+    test_op_mod();
+    test_op_elemmatch();
     
     printf("\n🎉 All operator unit tests passed! ✅\n");
     

@@ -200,7 +200,9 @@ typedef enum {
     OP_OR,
     OP_NOT,
     OP_NOR,
-    OP_REGEX
+    OP_REGEX,
+    OP_MOD,
+    OP_ELEMMATCH
 } query_operator_t;
 
 // Static helper functions for complex operators
@@ -215,6 +217,8 @@ static bool evaluate_or_operator(const bson_t *doc, const bson_iter_t *query_ite
 static bool evaluate_not_operator(const bson_t *doc, const bson_iter_t *query_iter);
 static bool evaluate_nor_operator(const bson_t *doc, const bson_iter_t *query_iter);
 static bool evaluate_regex_operator(const bson_iter_t *doc_iter, const bson_iter_t *query_iter);
+static bool evaluate_mod_operator(const bson_iter_t *doc_iter, const bson_iter_t *query_iter);
+static bool evaluate_elemmatch_operator(const bson_iter_t *doc_iter, const bson_iter_t *query_iter);
 static query_operator_t parse_query_operator(const char *op_string);
 
 // Helper function to evaluate query operators
@@ -276,6 +280,12 @@ bool evaluate_query_operator(const bson_iter_t *doc_iter, const bson_t *query_ex
             case OP_REGEX:
                 return evaluate_regex_operator(doc_iter, &query_iter);
                 
+            case OP_MOD:
+                return evaluate_mod_operator(doc_iter, &query_iter);
+                
+            case OP_ELEMMATCH:
+                return evaluate_elemmatch_operator(doc_iter, &query_iter);
+                
             case OP_UNKNOWN:
             default:
                 return false; // Unknown operator
@@ -304,6 +314,8 @@ static query_operator_t parse_query_operator(const char *op_string) {
     if (strcmp(op_string, "$not") == 0) return OP_NOT;
     if (strcmp(op_string, "$nor") == 0) return OP_NOR;
     if (strcmp(op_string, "$regex") == 0) return OP_REGEX;
+    if (strcmp(op_string, "$mod") == 0) return OP_MOD;
+    if (strcmp(op_string, "$elemMatch") == 0) return OP_ELEMMATCH;
     return OP_UNKNOWN;
 }
 
@@ -777,6 +789,153 @@ static bool evaluate_regex_operator(const bson_iter_t *doc_iter, const bson_iter
     return false; // Unsupported query format
 }
 
+// Static helper function for $mod operator
+static bool evaluate_mod_operator(const bson_iter_t *doc_iter, const bson_iter_t *query_iter) {
+    // $mod operator expects an array with [divisor, remainder]
+    if (!BSON_ITER_HOLDS_ARRAY(query_iter)) {
+        return false;
+    }
+    
+    // Get the document value and ensure it's numeric
+    double doc_value = 0.0;
+    bool doc_is_numeric = false;
+    
+    if (BSON_ITER_HOLDS_DOUBLE(doc_iter)) {
+        doc_value = bson_iter_double(doc_iter);
+        doc_is_numeric = true;
+    } else if (BSON_ITER_HOLDS_INT32(doc_iter)) {
+        doc_value = (double)bson_iter_int32(doc_iter);
+        doc_is_numeric = true;
+    } else if (BSON_ITER_HOLDS_INT64(doc_iter)) {
+        doc_value = (double)bson_iter_int64(doc_iter);
+        doc_is_numeric = true;
+    }
+    
+    if (!doc_is_numeric) {
+        return false; // $mod only works on numeric fields
+    }
+    
+    // Parse the array [divisor, remainder]
+    bson_iter_t array_iter;
+    if (!bson_iter_recurse(query_iter, &array_iter)) {
+        return false;
+    }
+    
+    // Get divisor (first element)
+    if (!bson_iter_next(&array_iter)) {
+        return false;
+    }
+    
+    double divisor = 0.0;
+    bool divisor_is_numeric = false;
+    
+    if (BSON_ITER_HOLDS_DOUBLE(&array_iter)) {
+        divisor = bson_iter_double(&array_iter);
+        divisor_is_numeric = true;
+    } else if (BSON_ITER_HOLDS_INT32(&array_iter)) {
+        divisor = (double)bson_iter_int32(&array_iter);
+        divisor_is_numeric = true;
+    } else if (BSON_ITER_HOLDS_INT64(&array_iter)) {
+        divisor = (double)bson_iter_int64(&array_iter);
+        divisor_is_numeric = true;
+    }
+    
+    if (!divisor_is_numeric || divisor == 0.0) {
+        return false; // Invalid divisor
+    }
+    
+    // Get remainder (second element)
+    if (!bson_iter_next(&array_iter)) {
+        return false;
+    }
+    
+    double remainder = 0.0;
+    bool remainder_is_numeric = false;
+    
+    if (BSON_ITER_HOLDS_DOUBLE(&array_iter)) {
+        remainder = bson_iter_double(&array_iter);
+        remainder_is_numeric = true;
+    } else if (BSON_ITER_HOLDS_INT32(&array_iter)) {
+        remainder = (double)bson_iter_int32(&array_iter);
+        remainder_is_numeric = true;
+    } else if (BSON_ITER_HOLDS_INT64(&array_iter)) {
+        remainder = (double)bson_iter_int64(&array_iter);
+        remainder_is_numeric = true;
+    }
+    
+    if (!remainder_is_numeric) {
+        return false; // Invalid remainder
+    }
+    
+    // Perform modulo operation
+    // Convert to integers for precise modulo calculation
+    long long doc_int = (long long)doc_value;
+    long long divisor_int = (long long)divisor;
+    long long remainder_int = (long long)remainder;
+    
+    // Calculate modulo with MongoDB-compatible behavior
+    // In MongoDB, the result has the same sign as the divisor
+    long long result = doc_int % divisor_int;
+    if (result < 0 && divisor_int > 0) {
+        result += divisor_int;
+    } else if (result > 0 && divisor_int < 0) {
+        result += divisor_int;
+    }
+    
+    return result == remainder_int;
+}
+
+// Static helper function for $elemMatch operator
+static bool evaluate_elemmatch_operator(const bson_iter_t *doc_iter, const bson_iter_t *query_iter) {
+    // $elemMatch only works on array fields
+    if (!BSON_ITER_HOLDS_ARRAY(doc_iter)) {
+        return false;
+    }
+    
+    // The query should be a document containing the conditions to match
+    if (!BSON_ITER_HOLDS_DOCUMENT(query_iter)) {
+        return false;
+    }
+    
+    // Get the query document
+    const uint8_t *query_data;
+    uint32_t query_len;
+    bson_iter_document(query_iter, &query_len, &query_data);
+    
+    bson_t query_doc;
+    if (!bson_init_static(&query_doc, query_data, query_len)) {
+        return false;
+    }
+    
+    // Iterate through the array elements
+    bson_iter_t array_iter;
+    if (!bson_iter_recurse(doc_iter, &array_iter)) {
+        return false;
+    }
+    
+    while (bson_iter_next(&array_iter)) {
+        // For each array element, check if it matches the query conditions
+        if (BSON_ITER_HOLDS_DOCUMENT(&array_iter)) {
+            // Get the array element as a document
+            const uint8_t *element_data;
+            uint32_t element_len;
+            bson_iter_document(&array_iter, &element_len, &element_data);
+            
+            bson_t element_doc;
+            if (bson_init_static(&element_doc, element_data, element_len)) {
+                // Check if this element matches all the query conditions
+                if (document_matches_filter(&element_doc, &query_doc)) {
+                    return true; // Found at least one matching element
+                }
+            }
+        }
+        // For non-document array elements, $elemMatch does not apply
+        // MongoDB's $elemMatch only works on arrays of documents
+    }
+    
+    return false; // No matching elements found
+}
+
 // Helper function to match BSON document against filter
 bool document_matches_filter(const bson_t *doc, const bson_t *filter) {
     if (!filter || bson_empty(filter)) {
@@ -1009,20 +1168,7 @@ mlite_cursor_t* mlite_find(mlite_db_t *db, const char *collection_name,
     }
     
     // Prepare SQL query to get all documents from collection
-    char *sql = NULL;
-    int sql_len = snprintf(NULL, 0, "SELECT _id, document FROM collection_%s", collection_name);
-    sql = malloc(sql_len + 1);
-    if (!sql) {
-        if (cursor->filter) bson_destroy(cursor->filter);
-        if (cursor->opts) bson_destroy(cursor->opts);
-        free(cursor->collection_name);
-        free(cursor);
-        return NULL;
-    }
-    snprintf(sql, sql_len + 1, "SELECT _id, document FROM collection_%s", collection_name);
-    
-    int rc = sqlite3_prepare_v2(db->sqlite_db, sql, -1, &cursor->stmt, NULL);
-    free(sql);
+    int rc = mlite_sql_prepare_collection_query(db->sqlite_db, collection_name, &cursor->stmt);
     
     if (rc != SQLITE_OK) {
         if (cursor->filter) bson_destroy(cursor->filter);
@@ -1048,7 +1194,11 @@ bool mlite_cursor_next(mlite_cursor_t *cursor, const bson_t **doc) {
     }
     
     while (true) {
-        int rc = sqlite3_step(cursor->stmt);
+        const char *oid_str;
+        const void *document_data;
+        int document_len;
+        
+        int rc = mlite_sql_query_step(cursor->stmt, &oid_str, &document_data, &document_len);
         
         if (rc == SQLITE_DONE) {
             cursor->finished = true;
@@ -1063,17 +1213,14 @@ bool mlite_cursor_next(mlite_cursor_t *cursor, const bson_t **doc) {
             return false;
         }
         
-        // Get document BLOB
-        const void *blob_data = sqlite3_column_blob(cursor->stmt, 1);
-        int blob_size = sqlite3_column_bytes(cursor->stmt, 1);
-        
-        if (!blob_data || blob_size <= 0) {
+        // Check if we have valid document data
+        if (!document_data || document_len <= 0) {
             continue;  // Skip invalid documents
         }
         
-        // Create BSON document from blob
+        // Create BSON document from document data
         bson_t *stored_doc = bson_new();
-        if (!bson_init_static(stored_doc, blob_data, blob_size)) {
+        if (!bson_init_static(stored_doc, document_data, document_len)) {
             bson_destroy(stored_doc);
             continue;  // Skip invalid BSON
         }
