@@ -865,13 +865,3 @@ void wtree_iterator_close(wtree_iterator_t *iter) {
     
     free(iter);
 }
-
-// ============= Utility Functions =============
-
-const char* wtree_error_message(gerror_t *error) {
-    return error_message(error);
-}
-
-void wtree_error_clear(gerror_t *error) {
-    error_clear(error);
-}

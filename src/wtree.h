@@ -138,14 +138,6 @@ int wtree_iterator_delete(wtree_iterator_t *iter, gerror_t *error);
 // Close iterator
 void wtree_iterator_close(wtree_iterator_t *iter);
 
-// ============= Utility Functions =============
-
-// Get last error message
-const char* wtree_error_message(gerror_t *error);
-
-// Clear error
-void wtree_error_clear(gerror_t *error);
-
 #ifdef __cplusplus
 }
 #endif
