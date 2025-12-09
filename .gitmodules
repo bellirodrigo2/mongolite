@@ -1,3 +1,6 @@
 [submodule "external/lmdb"]
 	path = external/lmdb
 	url = https://github.com/LMDB/lmdb.git
+[submodule "external/mongoc"]
+	path = external/mongoc
+	url = https://github.com/mongodb/mongo-c-driver.git

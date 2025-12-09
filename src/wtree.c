@@ -2,9 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
 #include <sys/stat.h>
+
 #include <errno.h>
+
 
 #ifdef _WIN32
     #include <direct.h>   // _mkdir, _rmdir
@@ -19,37 +20,32 @@
     #define wtree_rmdir(path) rmdir(path)
 #endif
 
-// Error handling
-struct wtree_error_t{
-    int code;
-    char message[256];
-} ;
+#define WTREE_LIB "wtree"
 
-// Database handle
-struct wtree_db_t{
+// ============= Internal Structures =============
+
+struct wtree_db_t {
     MDB_env *env;
     char *path;
     size_t mapsize;
     unsigned int max_dbs;
     unsigned int flags;
-} ;
+};
 
-// Transaction handle
-struct wtree_txn_t{
+struct wtree_txn_t {
     MDB_txn *txn;
     wtree_db_t *db;
     bool is_write;
-} ;
+};
 
-// Tree handle (DBI - Database Instance)
 struct wtree_tree_t {
     MDB_dbi dbi;
     char *name;
     wtree_db_t *db;
     MDB_cmp_func *cmp_func;
-} ;
+    MDB_cmp_func *dup_cmp_func;
+};
 
-// Iterator handle
 struct wtree_iterator_t {
     MDB_cursor *cursor;
     wtree_txn_t *txn;
@@ -57,51 +53,27 @@ struct wtree_iterator_t {
     MDB_val current_key;
     MDB_val current_val;
     bool valid;
-} ;
+    bool owns_txn;  // Se o iterator criou sua própria transação
+};
 
-// Key-Value pair
 struct wtree_kv_t {
     void *key;
     size_t key_size;
     void *value;
     size_t value_size;
-} ;
-
-// ============= Error Handling =============
-
-static void set_error(wtree_error_t *error, int code, const char *format, ...) {
-    if (!error) return;
-    
-    error->code = code;
-    
-    va_list args;
-    va_start(args, format);
-    vsnprintf(error->message, sizeof(error->message), format, args);
-    va_end(args);
-}
-
-const char* wtree_error_message(wtree_error_t *error) {
-    if (!error) return "No error";
-    return error->message;
-}
-
-void wtree_error_clear(wtree_error_t *error) {
-    if (!error) return;
-    error->code = 0;
-    error->message[0] = '\0';
-}
+};
 
 // ============= Database Operations =============
 
-wtree_db_t* wtree_db_create(const char *path, size_t mapsize, unsigned int max_dbs, wtree_error_t *error) {
+wtree_db_t* wtree_db_create(const char *path, size_t mapsize, unsigned int max_dbs, gerror_t *error) {
     if (!path) {
-        set_error(error, EINVAL, "Database path cannot be NULL");
+        set_error(error, WTREE_LIB, EINVAL, "Database path cannot be NULL");
         return NULL;
     }
     
     wtree_db_t *db = calloc(1, sizeof(wtree_db_t));
     if (!db) {
-        set_error(error, ENOMEM, "Failed to allocate memory for database");
+        set_error(error, WTREE_LIB, ENOMEM, "Failed to allocate memory for database");
         return NULL;
     }
     
@@ -109,7 +81,7 @@ wtree_db_t* wtree_db_create(const char *path, size_t mapsize, unsigned int max_d
     struct stat st = {0};
     if (stat(path, &st) == -1) {
         if (wtree_mkdir(path) != 0) {
-            set_error(error, errno, "Failed to create directory: %s", strerror(errno));
+            set_error(error, WTREE_LIB, errno, "Failed to create directory: %s", strerror(errno));
             free(db);
             return NULL;
         }
@@ -120,7 +92,7 @@ wtree_db_t* wtree_db_create(const char *path, size_t mapsize, unsigned int max_d
     // Create environment
     rc = mdb_env_create(&db->env);
     if (rc != 0) {
-        set_error(error, rc, "Failed to create environment: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to create environment: %s", mdb_strerror(rc));
         free(db);
         return NULL;
     }
@@ -131,7 +103,7 @@ wtree_db_t* wtree_db_create(const char *path, size_t mapsize, unsigned int max_d
     }
     rc = mdb_env_set_mapsize(db->env, mapsize);
     if (rc != 0) {
-        set_error(error, rc, "Failed to set map size: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to set map size: %s", mdb_strerror(rc));
         mdb_env_close(db->env);
         free(db);
         return NULL;
@@ -143,7 +115,7 @@ wtree_db_t* wtree_db_create(const char *path, size_t mapsize, unsigned int max_d
     }
     rc = mdb_env_set_maxdbs(db->env, max_dbs);
     if (rc != 0) {
-        set_error(error, rc, "Failed to set max databases: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to set max databases: %s", mdb_strerror(rc));
         mdb_env_close(db->env);
         free(db);
         return NULL;
@@ -152,7 +124,7 @@ wtree_db_t* wtree_db_create(const char *path, size_t mapsize, unsigned int max_d
     // Open environment
     rc = mdb_env_open(db->env, path, MDB_NOTLS, 0664);
     if (rc != 0) {
-        set_error(error, rc, "Failed to open environment: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to open environment: %s", mdb_strerror(rc));
         mdb_env_close(db->env);
         free(db);
         return NULL;
@@ -177,9 +149,9 @@ void wtree_db_close(wtree_db_t *db) {
     free(db);
 }
 
-int wtree_db_delete(const char *path, wtree_error_t *error) {
+int wtree_db_delete(const char *path, gerror_t *error) {
     if (!path) {
-        set_error(error, EINVAL, "Database path cannot be NULL");
+        set_error(error, WTREE_LIB, EINVAL, "Database path cannot be NULL");
         return -1;
     }
     
@@ -194,37 +166,37 @@ int wtree_db_delete(const char *path, wtree_error_t *error) {
     
     // Remove directory
     if (wtree_rmdir(path) != 0) {
-        set_error(error, errno, "Failed to remove directory: %s", strerror(errno));
+        set_error(error, WTREE_LIB, errno, "Failed to remove directory: %s", strerror(errno));
         return -1;
     }
     
     return 0;
 }
 
-int wtree_db_stats(wtree_db_t *db, MDB_stat *stat, wtree_error_t *error) {
+int wtree_db_stats(wtree_db_t *db, MDB_stat *stat, gerror_t *error) {
     if (!db || !stat) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
     
     int rc = mdb_env_stat(db->env, stat);
     if (rc != 0) {
-        set_error(error, rc, "Failed to get stats: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to get stats: %s", mdb_strerror(rc));
         return -1;
     }
     
     return 0;
 }
 
-int wtree_db_sync(wtree_db_t *db, bool force, wtree_error_t *error) {
+int wtree_db_sync(wtree_db_t *db, bool force, gerror_t *error) {
     if (!db) {
-        set_error(error, EINVAL, "Database cannot be NULL");
+        set_error(error, WTREE_LIB, EINVAL, "Database cannot be NULL");
         return -1;
     }
     
     int rc = mdb_env_sync(db->env, force ? 1 : 0);
     if (rc != 0) {
-        set_error(error, rc, "Failed to sync: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to sync: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -233,29 +205,29 @@ int wtree_db_sync(wtree_db_t *db, bool force, wtree_error_t *error) {
 
 // ============= Tree Operations =============
 
-wtree_tree_t* wtree_tree_create(wtree_db_t *db, const char *name, unsigned int flags, wtree_error_t *error) {
+wtree_tree_t* wtree_tree_create(wtree_db_t *db, const char *name, unsigned int flags, gerror_t *error) {
     if (!db) {
-        set_error(error, EINVAL, "Database cannot be NULL");
+        set_error(error, WTREE_LIB, EINVAL, "Database cannot be NULL");
         return NULL;
     }
     
     wtree_tree_t *tree = calloc(1, sizeof(wtree_tree_t));
     if (!tree) {
-        set_error(error, ENOMEM, "Failed to allocate memory for tree");
+        set_error(error, WTREE_LIB, ENOMEM, "Failed to allocate memory for tree");
         return NULL;
     }
     
     MDB_txn *txn;
     int rc = mdb_txn_begin(db->env, NULL, 0, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         free(tree);
         return NULL;
     }
     
     rc = mdb_dbi_open(txn, name, MDB_CREATE | flags, &tree->dbi);
     if (rc != 0) {
-        set_error(error, rc, "Failed to open database: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to open database: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         free(tree);
         return NULL;
@@ -263,7 +235,7 @@ wtree_tree_t* wtree_tree_create(wtree_db_t *db, const char *name, unsigned int f
     
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to commit transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to commit transaction: %s", mdb_strerror(rc));
         free(tree);
         return NULL;
     }
@@ -271,35 +243,34 @@ wtree_tree_t* wtree_tree_create(wtree_db_t *db, const char *name, unsigned int f
     tree->name = name ? strdup(name) : NULL;
     tree->db = db;
     tree->cmp_func = NULL;
+    tree->dup_cmp_func = NULL;
     
     return tree;
 }
 
-int wtree_tree_set_compare(wtree_tree_t *tree, MDB_cmp_func *cmp, wtree_error_t *error) {
+int wtree_tree_set_compare(wtree_tree_t *tree, MDB_cmp_func *cmp, gerror_t *error) {
     if (!tree || !cmp) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
     
-    // Need to set comparison in a transaction
     MDB_txn *txn;
     int rc = mdb_txn_begin(tree->db->env, NULL, 0, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         return -1;
     }
     
-    // Set the comparison function
     rc = mdb_set_compare(txn, tree->dbi, cmp);
     if (rc != 0) {
-        set_error(error, rc, "Failed to set compare function: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to set compare function: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         return -1;
     }
     
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to commit transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to commit transaction: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -307,9 +278,39 @@ int wtree_tree_set_compare(wtree_tree_t *tree, MDB_cmp_func *cmp, wtree_error_t 
     return 0;
 }
 
-char** wtree_tree_list(wtree_db_t *db, size_t *count, wtree_error_t *error) {
+int wtree_tree_set_dupsort(wtree_tree_t *tree, MDB_cmp_func *cmp, gerror_t *error) {
+    if (!tree || !cmp) {
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
+        return -1;
+    }
+    
+    MDB_txn *txn;
+    int rc = mdb_txn_begin(tree->db->env, NULL, 0, &txn);
+    if (rc != 0) {
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        return -1;
+    }
+    
+    rc = mdb_set_dupsort(txn, tree->dbi, cmp);
+    if (rc != 0) {
+        set_error(error, WTREE_LIB, rc, "Failed to set dupsort function: %s", mdb_strerror(rc));
+        mdb_txn_abort(txn);
+        return -1;
+    }
+    
+    rc = mdb_txn_commit(txn);
+    if (rc != 0) {
+        set_error(error, WTREE_LIB, rc, "Failed to commit transaction: %s", mdb_strerror(rc));
+        return -1;
+    }
+    
+    tree->dup_cmp_func = cmp;
+    return 0;
+}
+
+char** wtree_tree_list(wtree_db_t *db, size_t *count, gerror_t *error) {
     if (!db || !count) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return NULL;
     }
     
@@ -318,7 +319,7 @@ char** wtree_tree_list(wtree_db_t *db, size_t *count, wtree_error_t *error) {
     MDB_txn *txn;
     int rc = mdb_txn_begin(db->env, NULL, MDB_RDONLY, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         return NULL;
     }
     
@@ -326,7 +327,7 @@ char** wtree_tree_list(wtree_db_t *db, size_t *count, wtree_error_t *error) {
     MDB_dbi dbi;
     rc = mdb_dbi_open(txn, NULL, 0, &dbi);
     if (rc != 0) {
-        set_error(error, rc, "Failed to open main database: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to open main database: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         return NULL;
     }
@@ -335,7 +336,7 @@ char** wtree_tree_list(wtree_db_t *db, size_t *count, wtree_error_t *error) {
     MDB_stat stat;
     rc = mdb_stat(txn, dbi, &stat);
     if (rc != 0) {
-        set_error(error, rc, "Failed to get stats: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to get stats: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         return NULL;
     }
@@ -348,7 +349,7 @@ char** wtree_tree_list(wtree_db_t *db, size_t *count, wtree_error_t *error) {
     // Allocate array
     char **list = calloc(stat.ms_entries + 1, sizeof(char*));
     if (!list) {
-        set_error(error, ENOMEM, "Failed to allocate memory for list");
+        set_error(error, WTREE_LIB, ENOMEM, "Failed to allocate memory for list");
         mdb_txn_abort(txn);
         return NULL;
     }
@@ -357,7 +358,7 @@ char** wtree_tree_list(wtree_db_t *db, size_t *count, wtree_error_t *error) {
     MDB_cursor *cursor;
     rc = mdb_cursor_open(txn, dbi, &cursor);
     if (rc != 0) {
-        set_error(error, rc, "Failed to open cursor: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to open cursor: %s", mdb_strerror(rc));
         free(list);
         mdb_txn_abort(txn);
         return NULL;
@@ -394,37 +395,37 @@ void wtree_tree_list_free(char **list, size_t count) {
     free(list);
 }
 
-int wtree_tree_delete(wtree_db_t *db, const char *name, wtree_error_t *error) {
+int wtree_tree_delete(wtree_db_t *db, const char *name, gerror_t *error) {
     if (!db || !name) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
     
     MDB_txn *txn;
     int rc = mdb_txn_begin(db->env, NULL, 0, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         return -1;
     }
     
     MDB_dbi dbi;
     rc = mdb_dbi_open(txn, name, 0, &dbi);
     if (rc != 0) {
-        set_error(error, rc, "Failed to open database: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to open database: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         return -1;
     }
     
     rc = mdb_drop(txn, dbi, 1); // 1 = delete database
     if (rc != 0) {
-        set_error(error, rc, "Failed to drop database: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to drop database: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         return -1;
     }
     
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to commit transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to commit transaction: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -444,22 +445,22 @@ void wtree_tree_close(wtree_tree_t *tree) {
 
 // ============= Transaction Operations =============
 
-wtree_txn_t* wtree_txn_begin(wtree_db_t *db, bool write, wtree_error_t *error) {
+wtree_txn_t* wtree_txn_begin(wtree_db_t *db, bool write, gerror_t *error) {
     if (!db) {
-        set_error(error, EINVAL, "Database cannot be NULL");
+        set_error(error, WTREE_LIB, EINVAL, "Database cannot be NULL");
         return NULL;
     }
     
     wtree_txn_t *txn = calloc(1, sizeof(wtree_txn_t));
     if (!txn) {
-        set_error(error, ENOMEM, "Failed to allocate memory for transaction");
+        set_error(error, WTREE_LIB, ENOMEM, "Failed to allocate memory for transaction");
         return NULL;
     }
     
     unsigned int flags = write ? 0 : MDB_RDONLY;
     int rc = mdb_txn_begin(db->env, NULL, flags, &txn->txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         free(txn);
         return NULL;
     }
@@ -470,15 +471,15 @@ wtree_txn_t* wtree_txn_begin(wtree_db_t *db, bool write, wtree_error_t *error) {
     return txn;
 }
 
-int wtree_txn_commit(wtree_txn_t *txn, wtree_error_t *error) {
+int wtree_txn_commit(wtree_txn_t *txn, gerror_t *error) {
     if (!txn) {
-        set_error(error, EINVAL, "Transaction cannot be NULL");
+        set_error(error, WTREE_LIB, EINVAL, "Transaction cannot be NULL");
         return -1;
     }
     
     int rc = mdb_txn_commit(txn->txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to commit transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to commit transaction: %s", mdb_strerror(rc));
         free(txn);
         return -1;
     }
@@ -497,16 +498,16 @@ void wtree_txn_abort(wtree_txn_t *txn) {
 // ============= Data Operations =============
 
 int wtree_insert_one(wtree_tree_t *tree, const void *key, size_t key_size,
-                     const void *value, size_t value_size, wtree_error_t *error) {
+                     const void *value, size_t value_size, gerror_t *error) {
     if (!tree || !key || !value) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
     
     MDB_txn *txn;
     int rc = mdb_txn_begin(tree->db->env, NULL, 0, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -515,30 +516,30 @@ int wtree_insert_one(wtree_tree_t *tree, const void *key, size_t key_size,
     
     rc = mdb_put(txn, tree->dbi, &mkey, &mval, MDB_NOOVERWRITE);
     if (rc != 0) {
-        set_error(error, rc, "Failed to insert: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to insert: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         return -1;
     }
     
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to commit: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to commit: %s", mdb_strerror(rc));
         return -1;
     }
     
     return 0;
 }
 
-int wtree_insert_many(wtree_tree_t *tree, wtree_kv_t *kvs, size_t count, wtree_error_t *error) {
+int wtree_insert_many(wtree_tree_t *tree, wtree_kv_t *kvs, size_t count, gerror_t *error) {
     if (!tree || !kvs || count == 0) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
     
     MDB_txn *txn;
     int rc = mdb_txn_begin(tree->db->env, NULL, 0, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -548,7 +549,7 @@ int wtree_insert_many(wtree_tree_t *tree, wtree_kv_t *kvs, size_t count, wtree_e
         
         rc = mdb_put(txn, tree->dbi, &mkey, &mval, MDB_NOOVERWRITE);
         if (rc != 0 && rc != MDB_KEYEXIST) {
-            set_error(error, rc, "Failed to insert key at index %zu: %s", i, mdb_strerror(rc));
+            set_error(error, WTREE_LIB, rc, "Failed to insert key at index %zu: %s", i, mdb_strerror(rc));
             mdb_txn_abort(txn);
             return -1;
         }
@@ -556,7 +557,7 @@ int wtree_insert_many(wtree_tree_t *tree, wtree_kv_t *kvs, size_t count, wtree_e
     
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to commit: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to commit: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -564,16 +565,16 @@ int wtree_insert_many(wtree_tree_t *tree, wtree_kv_t *kvs, size_t count, wtree_e
 }
 
 int wtree_update(wtree_tree_t *tree, const void *key, size_t key_size,
-                const void *value, size_t value_size, wtree_error_t *error) {
+                const void *value, size_t value_size, gerror_t *error) {
     if (!tree || !key || !value) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
     
     MDB_txn *txn;
     int rc = mdb_txn_begin(tree->db->env, NULL, 0, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -582,30 +583,30 @@ int wtree_update(wtree_tree_t *tree, const void *key, size_t key_size,
     
     rc = mdb_put(txn, tree->dbi, &mkey, &mval, 0);
     if (rc != 0) {
-        set_error(error, rc, "Failed to update: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to update: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         return -1;
     }
     
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to commit: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to commit: %s", mdb_strerror(rc));
         return -1;
     }
     
     return 0;
 }
 
-int wtree_delete_one(wtree_tree_t *tree, const void *key, size_t key_size, wtree_error_t *error) {
+int wtree_delete_one(wtree_tree_t *tree, const void *key, size_t key_size, gerror_t *error) {
     if (!tree || !key) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
     
     MDB_txn *txn;
     int rc = mdb_txn_begin(tree->db->env, NULL, 0, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -613,14 +614,14 @@ int wtree_delete_one(wtree_tree_t *tree, const void *key, size_t key_size, wtree
     
     rc = mdb_del(txn, tree->dbi, &mkey, NULL);
     if (rc != 0) {
-        set_error(error, rc, "Failed to delete: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to delete: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         return -1;
     }
     
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to commit: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to commit: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -628,16 +629,16 @@ int wtree_delete_one(wtree_tree_t *tree, const void *key, size_t key_size, wtree
 }
 
 int wtree_get(wtree_tree_t *tree, const void *key, size_t key_size,
-             void **value, size_t *value_size, wtree_error_t *error) {
+             void **value, size_t *value_size, gerror_t *error) {
     if (!tree || !key || !value || !value_size) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
     
     MDB_txn *txn;
     int rc = mdb_txn_begin(tree->db->env, NULL, MDB_RDONLY, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -646,14 +647,14 @@ int wtree_get(wtree_tree_t *tree, const void *key, size_t key_size,
     
     rc = mdb_get(txn, tree->dbi, &mkey, &mval);
     if (rc != 0) {
-        set_error(error, rc, "Failed to get: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to get: %s", mdb_strerror(rc));
         mdb_txn_abort(txn);
         return -1;
     }
     
     *value = malloc(mval.mv_size);
     if (!*value) {
-        set_error(error, ENOMEM, "Failed to allocate memory for value");
+        set_error(error, WTREE_LIB, ENOMEM, "Failed to allocate memory for value");
         mdb_txn_abort(txn);
         return -1;
     }
@@ -665,16 +666,16 @@ int wtree_get(wtree_tree_t *tree, const void *key, size_t key_size,
     return 0;
 }
 
-bool wtree_exists(wtree_tree_t *tree, const void *key, size_t key_size, wtree_error_t *error) {
+bool wtree_exists(wtree_tree_t *tree, const void *key, size_t key_size, gerror_t *error) {
     if (!tree || !key) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return false;
     }
     
     MDB_txn *txn;
     int rc = mdb_txn_begin(tree->db->env, NULL, MDB_RDONLY, &txn);
     if (rc != 0) {
-        set_error(error, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to begin transaction: %s", mdb_strerror(rc));
         return false;
     }
     
@@ -689,9 +690,9 @@ bool wtree_exists(wtree_tree_t *tree, const void *key, size_t key_size, wtree_er
 
 // ============= Iterator Operations =============
 
-wtree_iterator_t* wtree_iterator_create(wtree_tree_t *tree, wtree_error_t *error) {
+wtree_iterator_t* wtree_iterator_create(wtree_tree_t *tree, gerror_t *error) {
     if (!tree) {
-        set_error(error, EINVAL, "Tree cannot be NULL");
+        set_error(error, WTREE_LIB, EINVAL, "Tree cannot be NULL");
         return NULL;
     }
     
@@ -706,24 +707,25 @@ wtree_iterator_t* wtree_iterator_create(wtree_tree_t *tree, wtree_error_t *error
         return NULL;
     }
     
+    iter->owns_txn = true;  // Iterator owns this transaction
     return iter;
 }
 
-wtree_iterator_t* wtree_iterator_create_with_txn(wtree_tree_t *tree, wtree_txn_t *txn, wtree_error_t *error) {
+wtree_iterator_t* wtree_iterator_create_with_txn(wtree_tree_t *tree, wtree_txn_t *txn, gerror_t *error) {
     if (!tree || !txn) {
-        set_error(error, EINVAL, "Invalid parameters");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return NULL;
     }
     
     wtree_iterator_t *iter = calloc(1, sizeof(wtree_iterator_t));
     if (!iter) {
-        set_error(error, ENOMEM, "Failed to allocate memory for iterator");
+        set_error(error, WTREE_LIB, ENOMEM, "Failed to allocate memory for iterator");
         return NULL;
     }
     
     int rc = mdb_cursor_open(txn->txn, tree->dbi, &iter->cursor);
     if (rc != 0) {
-        set_error(error, rc, "Failed to open cursor: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to open cursor: %s", mdb_strerror(rc));
         free(iter);
         return NULL;
     }
@@ -731,6 +733,7 @@ wtree_iterator_t* wtree_iterator_create_with_txn(wtree_tree_t *tree, wtree_txn_t
     iter->txn = txn;
     iter->tree = tree;
     iter->valid = false;
+    iter->owns_txn = false;  // Using external transaction
     
     return iter;
 }
@@ -819,25 +822,25 @@ bool wtree_iterator_valid(wtree_iterator_t *iter) {
     return iter && iter->valid;
 }
 
-int wtree_iterator_delete(wtree_iterator_t *iter, wtree_error_t *error) {
+int wtree_iterator_delete(wtree_iterator_t *iter, gerror_t *error) {
     if (!iter || !iter->cursor) {
-        set_error(error, EINVAL, "Invalid iterator");
+        set_error(error, WTREE_LIB, EINVAL, "Invalid iterator");
         return -1;
     }
     
     if (!iter->valid) {
-        set_error(error, EINVAL, "Iterator not positioned on a valid entry");
+        set_error(error, WTREE_LIB, EINVAL, "Iterator not positioned on a valid entry");
         return -1;
     }
     
     if (!iter->txn->is_write) {
-        set_error(error, EINVAL, "Delete requires write transaction");
+        set_error(error, WTREE_LIB, EINVAL, "Delete requires write transaction");
         return -1;
     }
     
     int rc = mdb_cursor_del(iter->cursor, 0);
     if (rc != 0) {
-        set_error(error, rc, "Failed to delete: %s", mdb_strerror(rc));
+        set_error(error, WTREE_LIB, rc, "Failed to delete: %s", mdb_strerror(rc));
         return -1;
     }
     
@@ -855,6 +858,20 @@ void wtree_iterator_close(wtree_iterator_t *iter) {
         mdb_cursor_close(iter->cursor);
     }
     
-    // Transaction cleanup is handled separately
+    // If iterator owns the transaction, clean it up
+    if (iter->owns_txn && iter->txn) {
+        wtree_txn_abort(iter->txn);
+    }
+    
     free(iter);
+}
+
+// ============= Utility Functions =============
+
+const char* wtree_error_message(gerror_t *error) {
+    return error_message(error);
+}
+
+void wtree_error_clear(gerror_t *error) {
+    error_clear(error);
 }
