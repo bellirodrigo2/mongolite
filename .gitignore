@@ -7,6 +7,8 @@ Release/
 MinSizeRel/
 RelWithDebInfo/
 
+todo
+
 # Object files
 *.o
 *.ko

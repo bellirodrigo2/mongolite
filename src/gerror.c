@@ -1,5 +1,16 @@
 #include "gerror.h"
 #include <stdio.h>
+#include <stddef.h> 
+#include <stdarg.h>
+
+void vset_error(gerror_t *error, const char *lib, int code, const char *format, va_list args) {
+    if (!error) return;
+
+    error->code = code;
+    snprintf(error->lib, sizeof(error->lib), "%s", lib ? lib : "unknown");
+    vsnprintf(error->message, sizeof(error->message), format, args);
+}
+
 
 void set_error(gerror_t *error, const char *lib, int code, const char *format, ...) {
     va_list args;

@@ -1,6 +1,8 @@
 #ifndef GERROR_H
 #define GERROR_H
 
+#include <stdio.h>
+#include <stddef.h> 
 #include <stdarg.h>
 
 #ifdef __cplusplus
@@ -12,6 +14,8 @@ typedef struct gerror_t {
     char lib[64];
     char message[256];
 } gerror_t;
+
+void vset_error(gerror_t *error, const char *lib, int code, const char *format, va_list args);
 
 void set_error(gerror_t *error, const char *lib, int code, const char *format, ...);
 
