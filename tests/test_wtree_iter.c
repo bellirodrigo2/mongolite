@@ -226,8 +226,8 @@ static void test_iterator_copy_isolated() {
     wtree_iterator_t *iter = wtree_iterator_create(tree, &error);
     
     printf("Moving to first item...\n");
-    // bool ok = wtree_iterator_first(iter);
-    // assert(ok);
+    bool ok = wtree_iterator_first(iter);
+    assert(ok);
     
     // Test copy functions
     void *key_copy, *val_copy;

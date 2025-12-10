@@ -30,6 +30,12 @@ else()
     endif()
 endif()
 
+if (WIN32)
+    set(SYSTEM_NETWORK_LIBS ws2_32)
+else()
+    set(SYSTEM_NETWORK_LIBS)
+endif()
+
 # =========================
 # Directories
 # =========================
@@ -131,9 +137,9 @@ set_target_properties(bson PROPERTIES
     IMPORTED_LOCATION ${LOCAL_LIBBSON_LIB}
 )
 
-include_directories(
-    ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
-)
+# include_directories(
+#     ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
+# )
 
 # ============================================================
 # ========================= SOURCES ======================
@@ -141,10 +147,12 @@ include_directories(
 
 set(GERROR_SRC ${SRC_DIR}/gerror.c)
 set(WTREE_SRC  ${SRC_DIR}/wtree.c)
+set(WBSON_SRC  ${SRC_DIR}/wbson.c)
 
 set(LIB_SOURCES
     ${GERROR_SRC}
     ${WTREE_SRC}
+    # ${WBSON_SRC}
 )
 
 # ============================================================
@@ -152,11 +160,22 @@ set(LIB_SOURCES
 # ============================================================
 
 add_library(wtree STATIC ${LIB_SOURCES})
-add_dependencies(wtree lmdb libbson)
+add_dependencies(wtree lmdb)
 
 target_link_libraries(wtree PRIVATE
     ${LOCAL_LMDB_LIB}
+)
+
+add_library(wbson STATIC ${WBSON_SRC})
+add_dependencies(wbson libbson)
+
+target_link_libraries(wbson PUBLIC
     bson
+    ${SYSTEM_NETWORK_LIBS}
+)
+
+target_include_directories(wbson PUBLIC
+    ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
 )
 
 # ============================================================
@@ -165,21 +184,25 @@ target_link_libraries(wtree PRIVATE
 
 enable_testing()
 
+# --- test para gerror
+
 add_executable(test_gerror
     ${TEST_DIR}/test_gerror.c
     ${GERROR_SRC}
 )
-add_dependencies(test_gerror lmdb libbson)
-target_link_libraries(test_gerror PRIVATE ${LOCAL_LMDB_LIB} bson)
+add_dependencies(test_gerror)
+# target_link_libraries(test_gerror PRIVATE ${LOCAL_LMDB_LIB})
 add_test(NAME test_gerror COMMAND test_gerror)
+
+# --- test para w_tree
 
 add_executable(test_wtree
     ${TEST_DIR}/test_wtree.c
     ${LIB_SOURCES}
 )
 
-add_dependencies(test_wtree lmdb libbson)
-target_link_libraries(test_wtree PRIVATE ${LOCAL_LMDB_LIB} bson)
+add_dependencies(test_wtree lmdb)
+target_link_libraries(test_wtree PRIVATE ${LOCAL_LMDB_LIB})
 add_test(NAME test_wtree COMMAND test_wtree)
 
 # --- Debug version of test_wtree
@@ -188,8 +211,8 @@ add_executable(test_wtree_debug
     ${TEST_DIR}/test_wtree_debug.c
     ${LIB_SOURCES}
 )
-add_dependencies(test_wtree_debug lmdb libbson)
-target_link_libraries(test_wtree_debug PRIVATE ${LOCAL_LMDB_LIB} bson)
+add_dependencies(test_wtree_debug lmdb)
+target_link_libraries(test_wtree_debug PRIVATE ${LOCAL_LMDB_LIB})
 add_test(NAME test_wtree_debug COMMAND test_wtree_debug)
 
 # --- Teste do iterador
@@ -197,12 +220,12 @@ add_executable(test_wtree_iter
     ${TEST_DIR}/test_wtree_iter.c
     ${LIB_SOURCES}
 )
-add_dependencies(test_wtree_iter lmdb libbson)
-target_link_libraries(test_wtree_iter PRIVATE ${LOCAL_LMDB_LIB} bson)
+add_dependencies(test_wtree_iter lmdb)
+target_link_libraries(test_wtree_iter PRIVATE ${LOCAL_LMDB_LIB})
 add_test(NAME test_wtree_iter COMMAND test_wtree_iter)
 
 
-set_target_properties(test_gerror test_wtree
+set_target_properties(test_gerror test_wtree test_wtree_debug test_wtree_iter
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR}
 )
@@ -212,7 +235,7 @@ set_target_properties(test_gerror test_wtree
 # =========================
 add_custom_target(run-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_gerror test_wtree
+    DEPENDS test_gerror test_wtree test_wtree_debug test_wtree_iter
 )
 
 # =========================
