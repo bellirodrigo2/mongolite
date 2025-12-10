@@ -3,45 +3,68 @@
 #include "test_runner.h"
 #include "wtree.h"
 #include "gerror.h"
-// #include <unistd.h>
 #include <sys/stat.h>
 #include <string.h>
+#include <stdio.h>
 
 #ifdef _WIN32
     #include <direct.h>
+    #include <windows.h>
     #define mkdir_portable(path) _mkdir(path)
+    #define sleep_ms(ms) Sleep(ms)
 #else
+    #include <dirent.h>
     #define mkdir_portable(path) mkdir(path, 0755)
+    #define sleep_ms(ms) usleep((ms) * 1000)
 #endif
 
-static const char *TEST_DB_PATH = "./test_wtree_db";
+static const char *TEST_DB_PATH = "./tests/test_wtree_db";
 
-// Helper to create test directory
+// Helper to create test directory structure
 static void create_test_dir(void) {
+    // First ensure tests directory exists
+    mkdir_portable("./tests");
+    // Then create the test database directory
     mkdir_portable(TEST_DB_PATH);
+}
+
+// Helper to recursively remove directory and contents
+static void remove_directory(const char *path) {
+#ifdef _WIN32
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "rmdir /s /q \"%s\" 2>nul", path);
+    system(cmd);
+#else
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "rm -rf \"%s\" 2>/dev/null", path);
+    system(cmd);
+#endif
 }
 
 // Helper to clean test database
 static void cleanup_test_db(void) {
-    // Remove database files
-    char cmd[256];
-#ifdef _WIN32
-    snprintf(cmd, sizeof(cmd), "rmdir /s /q %s 2>nul", TEST_DB_PATH);
-#else
-    snprintf(cmd, sizeof(cmd), "rm -rf %s", TEST_DB_PATH);
-#endif
-    system(cmd);
+    remove_directory(TEST_DB_PATH);
 }
 
 // Setup before tests
 static void setUp(void) {
     cleanup_test_db();
     create_test_dir();
+    
+    // Give OS time to release resources
+#ifdef _WIN32
+    sleep_ms(50);
+#endif
 }
 
 // Teardown after tests
 static void tearDown(void) {
     cleanup_test_db();
+    
+    // Give OS time to release resources
+#ifdef _WIN32
+    sleep_ms(50);
+#endif
 }
 
 // ============= Database Tests =============
@@ -463,6 +486,13 @@ TEST(transaction_batch_delete) {
 TEST(iterator_basic) {
     gerror_t error = {0};
     
+    // Extra cleanup for this specific test
+    cleanup_test_db();
+    create_test_dir();
+#ifdef _WIN32
+    sleep_ms(100);  // Windows needs more time to release locks
+#endif
+    
     wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
     wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
     
@@ -498,6 +528,13 @@ TEST(iterator_basic) {
 
 TEST(iterator_seek) {
     gerror_t error = {0};
+    
+    // Extra cleanup for this specific test
+    cleanup_test_db();
+    create_test_dir();
+#ifdef _WIN32
+    sleep_ms(100);  // Windows needs more time to release locks
+#endif
     
     wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
     wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
@@ -536,6 +573,13 @@ TEST(iterator_seek) {
 TEST(iterator_get_copy) {
     gerror_t error = {0};
     
+    // Extra cleanup for this specific test
+    cleanup_test_db();
+    create_test_dir();
+#ifdef _WIN32
+    sleep_ms(100);  // Windows needs more time to release locks
+#endif
+    
     wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
     wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
     
@@ -569,6 +613,13 @@ TEST(iterator_get_copy) {
 
 TEST(iterator_with_txn) {
     gerror_t error = {0};
+    
+    // Extra cleanup for this specific test
+    cleanup_test_db();
+    create_test_dir();
+#ifdef _WIN32
+    sleep_ms(100);  // Windows needs more time to release locks
+#endif
     
     wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
     wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
@@ -647,6 +698,16 @@ TEST(binary_data) {
 
 // ============= Main Test Suite =============
 
+static void final_cleanup(void) {
+    // Ensure all test artifacts are removed
+    cleanup_test_db();
+    
+    // Also try to remove the tests directory if it's empty
+#ifndef _WIN32
+    rmdir("./tests");  // Will fail silently if not empty
+#endif
+}
+
 TEST_SUITE_BEGIN("wtree tests")
     setUp();
     
@@ -687,4 +748,5 @@ TEST_SUITE_BEGIN("wtree tests")
     RUN_TEST(test_binary_data);
     
     tearDown();
+    final_cleanup();  // Final cleanup
 TEST_SUITE_END()

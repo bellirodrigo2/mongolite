@@ -5,11 +5,9 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-#ifdef _WIN32
-    #include <direct.h>   // _mkdir, _rmdir
-    #include <io.h>       // _unlink
-#else
-    #include <unistd.h>  // unlink, rmdir
+// Windows compatibility for S_ISDIR
+#ifndef S_ISDIR
+#define S_ISDIR(mode) (((mode) & S_IFMT) == S_IFDIR)
 #endif
 
 #define WTREE_LIB "wtree"
@@ -717,18 +715,39 @@ wtree_iterator_t* wtree_iterator_create(wtree_tree_t *tree, gerror_t *error) {
         return NULL;
     }
     
+    // Create a read-only transaction for the iterator
     wtree_txn_t *txn = wtree_txn_begin(tree->db, false, error);
     if (!txn) {
         return NULL;
     }
     
-    wtree_iterator_t *iter = wtree_iterator_create_with_txn(tree, txn, error);
+    wtree_iterator_t *iter = calloc(1, sizeof(wtree_iterator_t));
     if (!iter) {
+        set_error(error, WTREE_LIB, ENOMEM, "Failed to allocate memory for iterator");
         wtree_txn_abort(txn);
         return NULL;
     }
     
-    iter->owns_txn = true;  // Iterator owns this transaction
+    // Open cursor with the transaction
+    int rc = mdb_cursor_open(txn->txn, tree->dbi, &iter->cursor);
+    if (rc != 0) {
+        translate_mdb_error(rc, error);
+        free(iter);
+        wtree_txn_abort(txn);
+        return NULL;
+    }
+    
+    iter->txn = txn;
+    iter->tree = tree;
+    iter->valid = false;
+    iter->owns_txn = true;
+    
+    // Initialize MDB_val structures
+    iter->current_key.mv_size = 0;
+    iter->current_key.mv_data = NULL;
+    iter->current_val.mv_size = 0;
+    iter->current_val.mv_data = NULL;
+    
     return iter;
 }
 
@@ -754,13 +773,25 @@ wtree_iterator_t* wtree_iterator_create_with_txn(wtree_tree_t *tree, wtree_txn_t
     iter->txn = txn;
     iter->tree = tree;
     iter->valid = false;
-    iter->owns_txn = false;  // Using external transaction
+    iter->owns_txn = false;
+    
+    // Initialize MDB_val structures
+    iter->current_key.mv_size = 0;
+    iter->current_key.mv_data = NULL;
+    iter->current_val.mv_size = 0;
+    iter->current_val.mv_data = NULL;
     
     return iter;
 }
 
 bool wtree_iterator_first(wtree_iterator_t *iter) {
     if (!iter || !iter->cursor) return false;
+    
+    // Reset the MDB_val structures
+    iter->current_key.mv_size = 0;
+    iter->current_key.mv_data = NULL;
+    iter->current_val.mv_size = 0;
+    iter->current_val.mv_data = NULL;
     
     int rc = mdb_cursor_get(iter->cursor, &iter->current_key, &iter->current_val, MDB_FIRST);
     iter->valid = (rc == 0);
@@ -770,6 +801,12 @@ bool wtree_iterator_first(wtree_iterator_t *iter) {
 bool wtree_iterator_last(wtree_iterator_t *iter) {
     if (!iter || !iter->cursor) return false;
     
+    // Reset the MDB_val structures
+    iter->current_key.mv_size = 0;
+    iter->current_key.mv_data = NULL;
+    iter->current_val.mv_size = 0;
+    iter->current_val.mv_data = NULL;
+    
     int rc = mdb_cursor_get(iter->cursor, &iter->current_key, &iter->current_val, MDB_LAST);
     iter->valid = (rc == 0);
     return iter->valid;
@@ -778,6 +815,7 @@ bool wtree_iterator_last(wtree_iterator_t *iter) {
 bool wtree_iterator_next(wtree_iterator_t *iter) {
     if (!iter || !iter->cursor) return false;
     
+    // Don't reset MDB_val here - LMDB needs current position
     int rc = mdb_cursor_get(iter->cursor, &iter->current_key, &iter->current_val, MDB_NEXT);
     iter->valid = (rc == 0);
     return iter->valid;
@@ -786,6 +824,7 @@ bool wtree_iterator_next(wtree_iterator_t *iter) {
 bool wtree_iterator_prev(wtree_iterator_t *iter) {
     if (!iter || !iter->cursor) return false;
     
+    // Don't reset MDB_val here - LMDB needs current position
     int rc = mdb_cursor_get(iter->cursor, &iter->current_key, &iter->current_val, MDB_PREV);
     iter->valid = (rc == 0);
     return iter->valid;
@@ -794,13 +833,17 @@ bool wtree_iterator_prev(wtree_iterator_t *iter) {
 bool wtree_iterator_seek(wtree_iterator_t *iter, const void *key, size_t key_size) {
     if (!iter || !iter->cursor || !key) return false;
     
-    MDB_val mkey = {.mv_size = key_size, .mv_data = (void*)key};
-    int rc = mdb_cursor_get(iter->cursor, &mkey, &iter->current_val, MDB_SET);
+    // Create a local MDB_val for the search key
+    MDB_val search_key = {.mv_size = key_size, .mv_data = (void*)key};
+    MDB_val found_val = {0};
+    
+    // MDB_SET will modify search_key to contain the actual found key
+    int rc = mdb_cursor_get(iter->cursor, &search_key, &found_val, MDB_SET);
     
     if (rc == 0) {
-        // IMPORTANTE: MDB_SET retorna a chave encontrada em mkey
-        // Precisamos copiar para current_key
-        iter->current_key = mkey;
+        // Copy the returned values to our iterator's storage
+        iter->current_key = search_key;  // Now contains the found key
+        iter->current_val = found_val;   // Contains the found value
         iter->valid = true;
     } else {
         iter->valid = false;
@@ -812,13 +855,17 @@ bool wtree_iterator_seek(wtree_iterator_t *iter, const void *key, size_t key_siz
 bool wtree_iterator_seek_range(wtree_iterator_t *iter, const void *key, size_t key_size) {
     if (!iter || !iter->cursor || !key) return false;
     
-    MDB_val mkey = {.mv_size = key_size, .mv_data = (void*)key};
-    int rc = mdb_cursor_get(iter->cursor, &mkey, &iter->current_val, MDB_SET_RANGE);
+    // Create a local MDB_val for the search key
+    MDB_val search_key = {.mv_size = key_size, .mv_data = (void*)key};
+    MDB_val found_val = {0};
+    
+    // MDB_SET_RANGE will find key >= search_key
+    int rc = mdb_cursor_get(iter->cursor, &search_key, &found_val, MDB_SET_RANGE);
     
     if (rc == 0) {
-        // IMPORTANTE: MDB_SET_RANGE retorna a chave encontrada em mkey
-        // que pode ser diferente da chave buscada
-        iter->current_key = mkey;
+        // Copy the returned values to our iterator's storage
+        iter->current_key = search_key;  // Now contains the found key (>= original)
+        iter->current_val = found_val;   // Contains the found value
         iter->valid = true;
     } else {
         iter->valid = false;
@@ -846,22 +893,22 @@ bool wtree_iterator_value(wtree_iterator_t *iter, const void **value, size_t *va
 bool wtree_iterator_key_copy(wtree_iterator_t *iter, void **key, size_t *key_size) {
     if (!iter || !iter->valid || !key || !key_size) return false;
     
-    *key = malloc(iter->current_key.mv_size);
+    *key_size = iter->current_key.mv_size;
+    *key = malloc(*key_size);
     if (!*key) return false;
     
-    memcpy(*key, iter->current_key.mv_data, iter->current_key.mv_size);
-    *key_size = iter->current_key.mv_size;
+    memcpy(*key, iter->current_key.mv_data, *key_size);
     return true;
 }
 
 bool wtree_iterator_value_copy(wtree_iterator_t *iter, void **value, size_t *value_size) {
     if (!iter || !iter->valid || !value || !value_size) return false;
     
-    *value = malloc(iter->current_val.mv_size);
+    *value_size = iter->current_val.mv_size;
+    *value = malloc(*value_size);
     if (!*value) return false;
     
-    memcpy(*value, iter->current_val.mv_data, iter->current_val.mv_size);
-    *value_size = iter->current_val.mv_size;
+    memcpy(*value, iter->current_val.mv_data, *value_size);
     return true;
 }
 
@@ -890,9 +937,14 @@ int wtree_iterator_delete(wtree_iterator_t *iter, gerror_t *error) {
         return translate_mdb_error(rc, error);
     }
     
-    // Move to next after delete
+    // After delete, cursor position is undefined, try to move to next
     iter->valid = false;
-    wtree_iterator_next(iter);
+    rc = mdb_cursor_get(iter->cursor, &iter->current_key, &iter->current_val, MDB_GET_CURRENT);
+    if (rc == MDB_NOTFOUND) {
+        // Current was deleted, try next
+        rc = mdb_cursor_get(iter->cursor, &iter->current_key, &iter->current_val, MDB_NEXT);
+    }
+    iter->valid = (rc == 0);
     
     return 0;
 }

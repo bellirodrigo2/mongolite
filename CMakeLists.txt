@@ -177,9 +177,30 @@ add_executable(test_wtree
     ${TEST_DIR}/test_wtree.c
     ${LIB_SOURCES}
 )
+
 add_dependencies(test_wtree lmdb libbson)
 target_link_libraries(test_wtree PRIVATE ${LOCAL_LMDB_LIB} bson)
 add_test(NAME test_wtree COMMAND test_wtree)
+
+# --- Debug version of test_wtree
+
+add_executable(test_wtree_debug
+    ${TEST_DIR}/test_wtree_debug.c
+    ${LIB_SOURCES}
+)
+add_dependencies(test_wtree_debug lmdb libbson)
+target_link_libraries(test_wtree_debug PRIVATE ${LOCAL_LMDB_LIB} bson)
+add_test(NAME test_wtree_debug COMMAND test_wtree_debug)
+
+# --- Teste do iterador
+add_executable(test_wtree_iter
+    ${TEST_DIR}/test_wtree_iter.c
+    ${LIB_SOURCES}
+)
+add_dependencies(test_wtree_iter lmdb libbson)
+target_link_libraries(test_wtree_iter PRIVATE ${LOCAL_LMDB_LIB} bson)
+add_test(NAME test_wtree_iter COMMAND test_wtree_iter)
+
 
 set_target_properties(test_gerror test_wtree
     PROPERTIES
@@ -194,9 +215,6 @@ add_custom_target(run-tests
     DEPENDS test_gerror test_wtree
 )
 
-# =========================
-# Clean extra
-# =========================
 # =========================
 # Clean extra (LMDB + LIBBSON + DB de teste)
 # =========================
