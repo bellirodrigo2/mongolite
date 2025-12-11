@@ -1,0 +1,607 @@
+#include "test_runner.h"
+#include "bson_compare.h"
+
+/* ============================================================
+ * HELPERS
+ * ============================================================ */
+
+static bson_t *make_doc_int32(const char *key, int32_t val) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_INT32(doc, key, val);
+    return doc;
+}
+
+static bson_t *make_doc_int64(const char *key, int64_t val) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_INT64(doc, key, val);
+    return doc;
+}
+
+static bson_t *make_doc_double(const char *key, double val) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_DOUBLE(doc, key, val);
+    return doc;
+}
+
+static bson_t *make_doc_utf8(const char *key, const char *val) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, key, val);
+    return doc;
+}
+
+static bson_t *make_doc_bool(const char *key, bool val) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_BOOL(doc, key, val);
+    return doc;
+}
+
+static bson_t *make_doc_null(const char *key) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_NULL(doc, key);
+    return doc;
+}
+
+static bson_t *make_doc_minkey(const char *key) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_MINKEY(doc, key);
+    return doc;
+}
+
+static bson_t *make_doc_maxkey(const char *key) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_MAXKEY(doc, key);
+    return doc;
+}
+
+/* ============================================================
+ * TESTES: PRECEDÊNCIA DE TIPOS
+ * ============================================================ */
+
+TEST(type_minkey_less_than_null) {
+    bson_t *a = make_doc_minkey("x");
+    bson_t *b = make_doc_null("x");
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(type_null_less_than_number) {
+    bson_t *a = make_doc_null("x");
+    bson_t *b = make_doc_int32("x", 0);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(type_number_less_than_string) {
+    bson_t *a = make_doc_int32("x", 999);
+    bson_t *b = make_doc_utf8("x", "a");
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(type_bool_less_than_datetime) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_BOOL(a, "x", true);
+    BSON_APPEND_DATE_TIME(b, "x", 0);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(type_datetime_less_than_timestamp) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_DATE_TIME(a, "x", 9999999999999LL);
+    BSON_APPEND_TIMESTAMP(b, "x", 0, 0);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: COMPARAÇÃO NUMÉRICA - MESMO TIPO
+ * ============================================================ */
+
+TEST(int32_equal) {
+    bson_t *a = make_doc_int32("n", 42);
+    bson_t *b = make_doc_int32("n", 42);
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(int32_less) {
+    bson_t *a = make_doc_int32("n", 10);
+    bson_t *b = make_doc_int32("n", 20);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(int32_greater) {
+    bson_t *a = make_doc_int32("n", 100);
+    bson_t *b = make_doc_int32("n", 50);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) > 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(int64_equal) {
+    bson_t *a = make_doc_int64("n", 1000000000000LL);
+    bson_t *b = make_doc_int64("n", 1000000000000LL);
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(int64_less) {
+    bson_t *a = make_doc_int64("n", 999999999999LL);
+    bson_t *b = make_doc_int64("n", 1000000000000LL);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(double_equal) {
+    bson_t *a = make_doc_double("n", 3.14159);
+    bson_t *b = make_doc_double("n", 3.14159);
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(double_less) {
+    bson_t *a = make_doc_double("n", 3.14);
+    bson_t *b = make_doc_double("n", 3.15);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(decimal128_less) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    bson_decimal128_t dec_a, dec_b;
+    bson_decimal128_from_string("123.456", &dec_a);
+    bson_decimal128_from_string("123.457", &dec_b);
+    BSON_APPEND_DECIMAL128(a, "n", &dec_a);
+    BSON_APPEND_DECIMAL128(b, "n", &dec_b);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: STRINGS
+ * ============================================================ */
+
+TEST(strings_equal) {
+    bson_t *a = make_doc_utf8("s", "hello");
+    bson_t *b = make_doc_utf8("s", "hello");
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(strings_lexicographic) {
+    bson_t *a = make_doc_utf8("s", "abc");
+    bson_t *b = make_doc_utf8("s", "abd");
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(strings_prefix_shorter_is_less) {
+    bson_t *a = make_doc_utf8("s", "abc");
+    bson_t *b = make_doc_utf8("s", "abcd");
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(strings_empty) {
+    bson_t *a = make_doc_utf8("s", "");
+    bson_t *b = make_doc_utf8("s", "a");
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: BOOLEAN
+ * ============================================================ */
+
+TEST(bool_false_less_than_true) {
+    bson_t *a = make_doc_bool("b", false);
+    bson_t *b = make_doc_bool("b", true);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(bool_equal_true) {
+    bson_t *a = make_doc_bool("b", true);
+    bson_t *b = make_doc_bool("b", true);
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(bool_equal_false) {
+    bson_t *a = make_doc_bool("b", false);
+    bson_t *b = make_doc_bool("b", false);
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: OBJECTID
+ * ============================================================ */
+
+TEST(oid_less) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    bson_oid_t oid_a, oid_b;
+    bson_oid_init_from_string(&oid_a, "000000000000000000000001");
+    bson_oid_init_from_string(&oid_b, "000000000000000000000002");
+    BSON_APPEND_OID(a, "id", &oid_a);
+    BSON_APPEND_OID(b, "id", &oid_b);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(oid_equal) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    bson_oid_t oid;
+    bson_oid_init_from_string(&oid, "507f1f77bcf86cd799439011");
+    BSON_APPEND_OID(a, "id", &oid);
+    BSON_APPEND_OID(b, "id", &oid);
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: DATE_TIME
+ * ============================================================ */
+
+TEST(datetime_less) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_DATE_TIME(a, "d", 1000);
+    BSON_APPEND_DATE_TIME(b, "d", 2000);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(datetime_equal) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_DATE_TIME(a, "d", 1702300800000LL);
+    BSON_APPEND_DATE_TIME(b, "d", 1702300800000LL);
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: TIMESTAMP
+ * ============================================================ */
+
+TEST(timestamp_by_ts) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_TIMESTAMP(a, "t", 100, 1);
+    BSON_APPEND_TIMESTAMP(b, "t", 200, 1);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(timestamp_by_inc) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_TIMESTAMP(a, "t", 100, 1);
+    BSON_APPEND_TIMESTAMP(b, "t", 100, 2);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(timestamp_equal) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_TIMESTAMP(a, "t", 100, 5);
+    BSON_APPEND_TIMESTAMP(b, "t", 100, 5);
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: BINARY
+ * ============================================================ */
+
+TEST(binary_by_length) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    uint8_t data_a[] = {1, 2};
+    uint8_t data_b[] = {1, 2, 3};
+    BSON_APPEND_BINARY(a, "bin", BSON_SUBTYPE_BINARY, data_a, 2);
+    BSON_APPEND_BINARY(b, "bin", BSON_SUBTYPE_BINARY, data_b, 3);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(binary_by_subtype) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    uint8_t data[] = {1, 2, 3};
+    BSON_APPEND_BINARY(a, "bin", BSON_SUBTYPE_BINARY, data, 3);
+    BSON_APPEND_BINARY(b, "bin", BSON_SUBTYPE_UUID, data, 3);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(binary_by_content) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    uint8_t data_a[] = {1, 2, 3};
+    uint8_t data_b[] = {1, 2, 4};
+    BSON_APPEND_BINARY(a, "bin", BSON_SUBTYPE_BINARY, data_a, 3);
+    BSON_APPEND_BINARY(b, "bin", BSON_SUBTYPE_BINARY, data_b, 3);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: REGEX
+ * ============================================================ */
+
+TEST(regex_by_pattern) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_REGEX(a, "r", "abc", "i");
+    BSON_APPEND_REGEX(b, "r", "abd", "i");
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(regex_by_options) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_REGEX(a, "r", "abc", "i");
+    BSON_APPEND_REGEX(b, "r", "abc", "m");
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(regex_equal) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_REGEX(a, "r", "^test$", "im");
+    BSON_APPEND_REGEX(b, "r", "^test$", "im");
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: DOCUMENTOS ANINHADOS
+ * ============================================================ */
+
+TEST(nested_doc_less) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    bson_t child_a, child_b;
+
+    bson_append_document_begin(a, "nested", -1, &child_a);
+    BSON_APPEND_INT32(&child_a, "x", 1);
+    bson_append_document_end(a, &child_a);
+
+    bson_append_document_begin(b, "nested", -1, &child_b);
+    BSON_APPEND_INT32(&child_b, "x", 2);
+    bson_append_document_end(b, &child_b);
+
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(nested_doc_equal) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    bson_t child_a, child_b;
+
+    bson_append_document_begin(a, "nested", -1, &child_a);
+    BSON_APPEND_UTF8(&child_a, "name", "test");
+    BSON_APPEND_INT32(&child_a, "val", 42);
+    bson_append_document_end(a, &child_a);
+
+    bson_append_document_begin(b, "nested", -1, &child_b);
+    BSON_APPEND_UTF8(&child_b, "name", "test");
+    BSON_APPEND_INT32(&child_b, "val", 42);
+    bson_append_document_end(b, &child_b);
+
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: CHAVES E TAMANHO DE DOC
+ * ============================================================ */
+
+TEST(key_order_matters) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_INT32(a, "aaa", 1);
+    BSON_APPEND_INT32(b, "bbb", 1);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(more_fields_is_greater) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_INT32(a, "x", 1);
+    BSON_APPEND_INT32(b, "x", 1);
+    BSON_APPEND_INT32(b, "y", 2);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(empty_docs_equal) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: MINKEY/MAXKEY/NULL EQUALITY
+ * ============================================================ */
+
+TEST(minkey_equal) {
+    bson_t *a = make_doc_minkey("x");
+    bson_t *b = make_doc_minkey("x");
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(maxkey_equal) {
+    bson_t *a = make_doc_maxkey("x");
+    bson_t *b = make_doc_maxkey("x");
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(null_equal) {
+    bson_t *a = make_doc_null("x");
+    bson_t *b = make_doc_null("x");
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * TESTES: MÚLTIPLOS CAMPOS
+ * ============================================================ */
+
+TEST(multi_field_first_differs) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_INT32(a, "a", 1);
+    BSON_APPEND_INT32(a, "b", 100);
+    BSON_APPEND_INT32(b, "a", 2);
+    BSON_APPEND_INT32(b, "b", 1);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+TEST(multi_field_second_differs) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    BSON_APPEND_INT32(a, "a", 1);
+    BSON_APPEND_INT32(a, "b", 10);
+    BSON_APPEND_INT32(b, "a", 1);
+    BSON_APPEND_INT32(b, "b", 20);
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+    return 0;
+}
+
+/* ============================================================
+ * MAIN
+ * ============================================================ */
+
+TEST_SUITE_BEGIN("bson_compare tests")
+
+    /* Precedência de tipos */
+    RUN_TEST(test_type_minkey_less_than_null);
+    RUN_TEST(test_type_null_less_than_number);
+    RUN_TEST(test_type_number_less_than_string);
+    RUN_TEST(test_type_bool_less_than_datetime);
+    RUN_TEST(test_type_datetime_less_than_timestamp);
+
+    /* Numéricos - mesmo tipo */
+    RUN_TEST(test_int32_equal);
+    RUN_TEST(test_int32_less);
+    RUN_TEST(test_int32_greater);
+    RUN_TEST(test_int64_equal);
+    RUN_TEST(test_int64_less);
+    RUN_TEST(test_double_equal);
+    RUN_TEST(test_double_less);
+    RUN_TEST(test_decimal128_less);
+
+    /* Strings */
+    RUN_TEST(test_strings_equal);
+    RUN_TEST(test_strings_lexicographic);
+    RUN_TEST(test_strings_prefix_shorter_is_less);
+    RUN_TEST(test_strings_empty);
+
+    /* Boolean */
+    RUN_TEST(test_bool_false_less_than_true);
+    RUN_TEST(test_bool_equal_true);
+    RUN_TEST(test_bool_equal_false);
+
+    /* ObjectId */
+    RUN_TEST(test_oid_less);
+    RUN_TEST(test_oid_equal);
+
+    /* DateTime */
+    RUN_TEST(test_datetime_less);
+    RUN_TEST(test_datetime_equal);
+
+    /* Timestamp */
+    RUN_TEST(test_timestamp_by_ts);
+    RUN_TEST(test_timestamp_by_inc);
+    RUN_TEST(test_timestamp_equal);
+
+    /* Binary */
+    RUN_TEST(test_binary_by_length);
+    RUN_TEST(test_binary_by_subtype);
+    RUN_TEST(test_binary_by_content);
+
+    /* Regex */
+    RUN_TEST(test_regex_by_pattern);
+    RUN_TEST(test_regex_by_options);
+    RUN_TEST(test_regex_equal);
+
+    /* Documentos aninhados */
+    RUN_TEST(test_nested_doc_less);
+    RUN_TEST(test_nested_doc_equal);
+
+    /* Chaves e tamanho */
+    RUN_TEST(test_key_order_matters);
+    RUN_TEST(test_more_fields_is_greater);
+    RUN_TEST(test_empty_docs_equal);
+
+    /* MinKey/MaxKey/Null equality */
+    RUN_TEST(test_minkey_equal);
+    RUN_TEST(test_maxkey_equal);
+    RUN_TEST(test_null_equal);
+
+    /* Múltiplos campos */
+    RUN_TEST(test_multi_field_first_differs);
+    RUN_TEST(test_multi_field_second_differs);
+
+TEST_SUITE_END()

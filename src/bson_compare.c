@@ -5,14 +5,13 @@
 #include <math.h>       // isnan, isinf (se quiser usar)
 
 #include "bson_compare.h"
-#include "wbson.h"
 
 /* ============================================================
  * 1) PRECEDÊNCIA DE TIPOS (ORDEM OFICIAL DO MONGODB)
  *    https://www.mongodb.com/docs/manual/reference/bson-type-comparison-order/
  * ============================================================ */
 
-static int get_mongodb_type_precedence(wbson_type_t type) {
+static int get_mongodb_type_precedence(bson_type_t type) {
     switch (type) {
         case BSON_TYPE_MINKEY:     return 1;
         case BSON_TYPE_NULL:       return 2;
@@ -55,25 +54,25 @@ static int get_mongodb_type_precedence(wbson_type_t type) {
  *    na maior parte dos casos.
  * ============================================================ */
 
-static double mongodb_numeric_to_double(const wbson_iter_t *it) {
-    wbson_type_t t = wbson_iter_type(it);
+static double mongodb_numeric_to_double(const bson_iter_t *it) {
+    bson_type_t t = bson_iter_type(it);
 
     switch (t) {
         case BSON_TYPE_INT32:
-            return (double) wbson_iter_int32(it);
+            return (double) bson_iter_int32(it);
 
         case BSON_TYPE_INT64:
-            return (double) wbson_iter_int64(it);
+            return (double) bson_iter_int64(it);
 
         case BSON_TYPE_DOUBLE:
-            return wbson_iter_double(it);
+            return bson_iter_double(it);
 
         case BSON_TYPE_DECIMAL128: {
-            wbson_decimal128_t dec;
+            bson_decimal128_t dec;
             char buf[BSON_DECIMAL128_STRING];
 
-            wbson_iter_decimal128(it, &dec);
-            wbson_decimal128_to_string(&dec, buf);
+            bson_iter_decimal128(it, &dec);
+            bson_decimal128_to_string(&dec, buf);
 
             /* strtod faz o parse da representação textual */
             return strtod(buf, NULL);
@@ -92,27 +91,24 @@ static double mongodb_numeric_to_double(const wbson_iter_t *it) {
  *    - demais (double/decimal128 ou mistos): converte pra double
  * ============================================================ */
 
-static int mongodb_compare_numbers(const wbson_iter_t *a, const wbson_iter_t *b) {
-    wbson_type_t ta = wbson_iter_type(a);
-    wbson_type_t tb = wbson_iter_type(b);
+static int mongodb_compare_numbers(const bson_iter_t *a, const bson_iter_t *b) {
+    bson_type_t ta = bson_iter_type(a);
+    bson_type_t tb = bson_iter_type(b);
 
     bool a_is_int =
         (ta == BSON_TYPE_INT32) || (ta == BSON_TYPE_INT64);
     bool b_is_int =
         (tb == BSON_TYPE_INT32) || (tb == BSON_TYPE_INT64);
 
-    bool a_is_dec = (ta == BSON_TYPE_DECIMAL128);
-    bool b_is_dec = (tb == BSON_TYPE_DECIMAL128);
-
     /* Caso 1: ambos inteiros (int32/int64) → compara em int64 */
     if (a_is_int && b_is_int) {
         int64_t ia = (ta == BSON_TYPE_INT32)
-                        ? (int64_t) wbson_iter_int32(a)
-                        : wbson_iter_int64(a);
+                        ? (int64_t) bson_iter_int32(a)
+                        : bson_iter_int64(a);
 
         int64_t ib = (tb == BSON_TYPE_INT32)
-                        ? (int64_t) wbson_iter_int32(b)
-                        : wbson_iter_int64(b);
+                        ? (int64_t) bson_iter_int32(b)
+                        : bson_iter_int64(b);
 
         if (ia < ib) return -1;
         if (ia > ib) return 1;
@@ -141,7 +137,7 @@ static int mongodb_compare_numbers(const wbson_iter_t *a, const wbson_iter_t *b)
  * 4) FORWARD DECLARATION: COMPARAÇÃO DE VALORES (ITERADORES)
  * ============================================================ */
 
-int mongodb_compare_iter(const wbson_iter_t *a, const wbson_iter_t *b);
+int mongodb_compare_iter(const bson_iter_t *a, const bson_iter_t *b);
 
 /* ============================================================
  * 5) COMPARAÇÃO DE DOCUMENTOS (RECURSIVA)
@@ -153,15 +149,15 @@ int mongodb_compare_iter(const wbson_iter_t *a, const wbson_iter_t *b);
  *    - documento que acabar primeiro é "menor".
  * ============================================================ */
 
-int wbson_compare_docs(const wbson_t *doc1, const wbson_t *doc2) {
-    wbson_iter_t it1, it2;
+int bson_compare_docs(const bson_t *doc1, const bson_t *doc2) {
+    bson_iter_t it1, it2;
 
-    bool ok1 = wbson_iter_init(&it1, doc1);
-    bool ok2 = wbson_iter_init(&it2, doc2);
+    bool ok1 = bson_iter_init(&it1, doc1);
+    bool ok2 = bson_iter_init(&it2, doc2);
 
     while (ok1 && ok2) {
-        const char *k1 = wbson_iter_key(&it1);
-        const char *k2 = wbson_iter_key(&it2);
+        const char *k1 = bson_iter_key(&it1);
+        const char *k2 = bson_iter_key(&it2);
 
         int keyCmp = strcmp(k1, k2);
         if (keyCmp != 0)
@@ -171,8 +167,8 @@ int wbson_compare_docs(const wbson_t *doc1, const wbson_t *doc2) {
         if (valCmp != 0)
             return valCmp;
 
-        ok1 = wbson_iter_next(&it1);
-        ok2 = wbson_iter_next(&it2);
+        ok1 = bson_iter_next(&it1);
+        ok2 = bson_iter_next(&it2);
     }
 
     if (ok1) return 1;   /* doc1 tem mais campos → maior */
@@ -184,9 +180,9 @@ int wbson_compare_docs(const wbson_t *doc1, const wbson_t *doc2) {
  * 6) COMPARAÇÃO DE VALORES BSON (ITERADORES)
  * ============================================================ */
 
-int mongodb_compare_iter(const wbson_iter_t *a, const wbson_iter_t *b) {
-    wbson_type_t ta = wbson_iter_type(a);
-    wbson_type_t tb = wbson_iter_type(b);
+int mongodb_compare_iter(const bson_iter_t *a, const bson_iter_t *b) {
+    bson_type_t ta = bson_iter_type(a);
+    bson_type_t tb = bson_iter_type(b);
 
     int pa = get_mongodb_type_precedence(ta);
     int pb = get_mongodb_type_precedence(tb);
@@ -204,8 +200,8 @@ int mongodb_compare_iter(const wbson_iter_t *a, const wbson_iter_t *b) {
             return 0;
 
         case BSON_TYPE_BOOL: {
-            bool va = wbson_iter_bool(a);
-            bool vb = wbson_iter_bool(b);
+            bool va = bson_iter_bool(a);
+            bool vb = bson_iter_bool(b);
             if (va < vb) return -1;
             if (va > vb) return 1;
             return 0;
@@ -214,8 +210,8 @@ int mongodb_compare_iter(const wbson_iter_t *a, const wbson_iter_t *b) {
         case BSON_TYPE_UTF8:
         case BSON_TYPE_SYMBOL: {
             uint32_t la, lb;
-            const char *sa = wbson_iter_utf8(a, &la);
-            const char *sb = wbson_iter_utf8(b, &lb);
+            const char *sa = bson_iter_utf8(a, &la);
+            const char *sb = bson_iter_utf8(b, &lb);
 
             uint32_t min = (la < lb) ? la : lb;
             int cmp = memcmp(sa, sb, min);
@@ -234,14 +230,14 @@ int mongodb_compare_iter(const wbson_iter_t *a, const wbson_iter_t *b) {
             return mongodb_compare_numbers(a, b);
 
         case BSON_TYPE_OID: {
-            const wbson_oid_t *oa = wbson_iter_oid(a);
-            const wbson_oid_t *ob = wbson_iter_oid(b);
-            return wbson_oid_compare(oa, ob);
+            const bson_oid_t *oa = bson_iter_oid(a);
+            const bson_oid_t *ob = bson_iter_oid(b);
+            return bson_oid_compare(oa, ob);
         }
 
         case BSON_TYPE_DATE_TIME: {
-            int64_t da = wbson_iter_date_time(a);
-            int64_t db = wbson_iter_date_time(b);
+            int64_t da = bson_iter_date_time(a);
+            int64_t db = bson_iter_date_time(b);
             if (da < db) return -1;
             if (da > db) return 1;
             return 0;
@@ -249,8 +245,8 @@ int mongodb_compare_iter(const wbson_iter_t *a, const wbson_iter_t *b) {
 
         case BSON_TYPE_TIMESTAMP: {
             uint32_t ts_a, inc_a, ts_b, inc_b;
-            wbson_iter_timestamp(a, &ts_a, &inc_a);
-            wbson_iter_timestamp(b, &ts_b, &inc_b);
+            bson_iter_timestamp(a, &ts_a, &inc_a);
+            bson_iter_timestamp(b, &ts_b, &inc_b);
 
             if (ts_a < ts_b) return -1;
             if (ts_a > ts_b) return 1;
@@ -266,8 +262,8 @@ int mongodb_compare_iter(const wbson_iter_t *a, const wbson_iter_t *b) {
             uint32_t len_a, len_b;
             const uint8_t *data_a, *data_b;
 
-            wbson_iter_binary(a, &sub_a, &len_a, &data_a);
-            wbson_iter_binary(b, &sub_b, &len_b, &data_b);
+            bson_iter_binary(a, &sub_a, &len_a, &data_a);
+            bson_iter_binary(b, &sub_b, &len_b, &data_b);
 
             /* MongoDB: BinData: primeiro tamanho, depois subtipo, depois bytes */
             if (len_a < len_b) return -1;
@@ -288,22 +284,20 @@ int mongodb_compare_iter(const wbson_iter_t *a, const wbson_iter_t *b) {
         case BSON_TYPE_ARRAY: {
             uint32_t len_a, len_b;
             const uint8_t *data_a, *data_b;
-            wbson_iter_document(a, &len_a, &data_a);
-            wbson_iter_document(b, &len_b, &data_b);
+            bson_iter_document(a, &len_a, &data_a);
+            bson_iter_document(b, &len_b, &data_b);
 
-            wbson_t A, B;
-            wbson_init_static(&A, data_a, len_a);
-            wbson_init_static(&B, data_b, len_b);
+            bson_t A, B;
+            bson_init_static(&A, data_a, len_a);
+            bson_init_static(&B, data_b, len_b);
 
-            return wbson_compare_docs(&A, &B);
+            return bson_compare_docs(&A, &B);
         }
 
         case BSON_TYPE_REGEX: {
-            const char *patA, *optA;
-            const char *patB, *optB;
-
-            wbson_iter_regex(a, &patA, &optA);
-            wbson_iter_regex(b, &patB, &optB);
+            const char *optA, *optB;
+            const char *patA = bson_iter_regex(a, &optA);
+            const char *patB = bson_iter_regex(b, &optB);
 
             int cmp = strcmp(patA, patB);
             if (cmp != 0) return (cmp < 0) ? -1 : 1;

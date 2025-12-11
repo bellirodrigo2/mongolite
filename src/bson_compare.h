@@ -5,9 +5,9 @@
 extern "C" {
 #endif
 
-#include "wbson.h"
+#include <bson/bson.h>
 
-int wbson_compare_docs(const wbson_t *doc1, const wbson_t *doc2);
+int bson_compare_docs(const bson_t *doc1, const bson_t *doc2);
 
 #ifdef __cplusplus
 }
