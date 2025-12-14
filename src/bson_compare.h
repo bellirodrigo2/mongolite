@@ -7,7 +7,15 @@ extern "C" {
 
 #include <bson/bson.h>
 
+// Compara dois documentos BSON inteiros (ordem MongoDB)
 int bson_compare_docs(const bson_t *doc1, const bson_t *doc2);
+
+// Extrai campos de um documento para criar uma index key
+// doc: documento fonte
+// keys: especificação do índice, ex: {"name": 1, "age": -1}
+// Retorna: novo bson_t alocado com os campos extraídos (caller deve chamar bson_destroy)
+//          NULL se erro
+bson_t* bson_extract_index_key(const bson_t *doc, const bson_t *keys);
 
 #ifdef __cplusplus
 }

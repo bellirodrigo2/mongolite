@@ -36,9 +36,6 @@ else()
     set(SYSTEM_NETWORK_LIBS)
 endif()
 
-# =========================
-# MinGW ANSI stdio fix
-# =========================
 if (MINGW)
     add_compile_definitions(__USE_MINGW_ANSI_STDIO=1)
 endif()
@@ -54,7 +51,6 @@ file(MAKE_DIRECTORY ${BIN_DIR})
 
 include_directories(
     ${SRC_DIR}
-    ${CMAKE_SOURCE_DIR}/external/lmdb/libraries/liblmdb
 )
 
 # ============================================================
@@ -96,6 +92,12 @@ add_custom_command(
 )
 
 add_custom_target(lmdb ALL DEPENDS ${LOCAL_LMDB_LIB})
+
+include_directories(
+    ${SRC_DIR}
+    ${CMAKE_SOURCE_DIR}/external/lmdb/libraries/liblmdb
+)
+
 
 # ============================================================
 # ========================= LIBBSON ===========================
@@ -149,14 +151,12 @@ include_directories(
 )
 
 # ============================================================
-# ========================= SOURCES ======================
+# ========================= SOURCES ==========================
 # ============================================================
 
-set(GERROR_SRC ${SRC_DIR}/gerror.c)
 set(WTREE_SRC  ${SRC_DIR}/wtree.c)
 
 set(LIB_SOURCES
-    ${GERROR_SRC}
     ${WTREE_SRC}
 )
 
@@ -181,10 +181,8 @@ enable_testing()
 
 add_executable(test_gerror
     ${TEST_DIR}/test_gerror.c
-    ${GERROR_SRC}
 )
 add_dependencies(test_gerror)
-# target_link_libraries(test_gerror PRIVATE ${LOCAL_LMDB_LIB})
 add_test(NAME test_gerror COMMAND test_gerror)
 
 # --- test para w_tree
@@ -217,7 +215,6 @@ target_link_libraries(test_bson_compare PRIVATE ${LOCAL_LIBBSON_LIB}
     ${SYSTEM_NETWORK_LIBS})
 add_test(NAME test_bson_compare COMMAND test_bson_compare)
 
-
 set_target_properties(test_gerror test_wtree test_wtree_iter test_bson_compare
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR}
@@ -230,16 +227,5 @@ set_target_properties(test_gerror test_wtree test_wtree_iter test_bson_compare
 
 add_custom_target(run-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_gerror test_wtree test_wtree_iter test_bson_compare
-)
-
-# =========================
-# Clean extra (LMDB + LIBBSON + DB de teste)
-# =========================
-add_custom_target(extra-clean
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_BINARY_DIR}/test_wtree_db
-    COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_BINARY_DIR}/mongoc-build
-    COMMAND ${CMAKE_COMMAND} -E rm -f  ${CMAKE_BINARY_DIR}/libbson.a
-    COMMAND ${CMAKE_COMMAND} -E rm -f  ${CMAKE_BINARY_DIR}/liblmdb.a
-    COMMENT "Removing test DB, mongoc build, libbson.a and liblmdb.a"
+    DEPENDS test_gerror test_wtree test_wtree_iter test_bson_compare test_bsonmatch
 )

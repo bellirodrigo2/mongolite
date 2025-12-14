@@ -530,6 +530,554 @@ TEST(multi_field_second_differs) {
 }
 
 /* ============================================================
+ * TESTES: bson_extract_index_key
+ * ============================================================ */
+
+/* Helper: verifica se dois BSON são iguais (byte a byte) */
+static bool bson_docs_equal(const bson_t *a, const bson_t *b) {
+    if (!a || !b) return a == b;
+    if (a->len != b->len) return false;
+    return memcmp(bson_get_data(a), bson_get_data(b), a->len) == 0;
+}
+
+/* Helper: cria keys spec {"field": 1} */
+static bson_t *make_keys_1(const char *f1) {
+    bson_t *keys = bson_new();
+    BSON_APPEND_INT32(keys, f1, 1);
+    return keys;
+}
+
+static bson_t *make_keys_2(const char *f1, const char *f2) {
+    bson_t *keys = bson_new();
+    BSON_APPEND_INT32(keys, f1, 1);
+    BSON_APPEND_INT32(keys, f2, 1);
+    return keys;
+}
+
+static bson_t *make_keys_3(const char *f1, const char *f2, const char *f3) {
+    bson_t *keys = bson_new();
+    BSON_APPEND_INT32(keys, f1, 1);
+    BSON_APPEND_INT32(keys, f2, 1);
+    BSON_APPEND_INT32(keys, f3, 1);
+    return keys;
+}
+
+TEST(extract_null_doc) {
+    bson_t *keys = make_keys_1("name");
+    bson_t *result = bson_extract_index_key(NULL, keys);
+    TEST_ASSERT_NULL(result);
+    bson_destroy(keys);
+    return 0;
+}
+
+TEST(extract_null_keys) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "name", "test");
+    bson_t *result = bson_extract_index_key(doc, NULL);
+    TEST_ASSERT_NULL(result);
+    bson_destroy(doc);
+    return 0;
+}
+
+TEST(extract_single_field_string) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "name", "Alice");
+    BSON_APPEND_INT32(doc, "age", 30);
+    BSON_APPEND_UTF8(doc, "city", "NYC");
+
+    bson_t *keys = make_keys_1("name");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_t *expected = bson_new();
+    BSON_APPEND_UTF8(expected, "name", "Alice");
+
+    TEST_ASSERT_TRUE(bson_docs_equal(result, expected));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    bson_destroy(expected);
+    return 0;
+}
+
+TEST(extract_single_field_int32) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "name", "Bob");
+    BSON_APPEND_INT32(doc, "age", 25);
+
+    bson_t *keys = make_keys_1("age");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_t *expected = bson_new();
+    BSON_APPEND_INT32(expected, "age", 25);
+
+    TEST_ASSERT_TRUE(bson_docs_equal(result, expected));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    bson_destroy(expected);
+    return 0;
+}
+
+TEST(extract_multiple_fields) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "name", "Charlie");
+    BSON_APPEND_INT32(doc, "age", 35);
+    BSON_APPEND_UTF8(doc, "city", "LA");
+    BSON_APPEND_DOUBLE(doc, "score", 95.5);
+
+    bson_t *keys = make_keys_2("name", "age");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_t *expected = bson_new();
+    BSON_APPEND_UTF8(expected, "name", "Charlie");
+    BSON_APPEND_INT32(expected, "age", 35);
+
+    TEST_ASSERT_TRUE(bson_docs_equal(result, expected));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    bson_destroy(expected);
+    return 0;
+}
+
+TEST(extract_three_fields) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "a", "val_a");
+    BSON_APPEND_INT32(doc, "b", 100);
+    BSON_APPEND_DOUBLE(doc, "c", 3.14);
+    BSON_APPEND_BOOL(doc, "d", true);
+
+    bson_t *keys = make_keys_3("a", "b", "c");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_t *expected = bson_new();
+    BSON_APPEND_UTF8(expected, "a", "val_a");
+    BSON_APPEND_INT32(expected, "b", 100);
+    BSON_APPEND_DOUBLE(expected, "c", 3.14);
+
+    TEST_ASSERT_TRUE(bson_docs_equal(result, expected));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    bson_destroy(expected);
+    return 0;
+}
+
+TEST(extract_missing_field_becomes_null) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "name", "Dave");
+
+    bson_t *keys = make_keys_1("nonexistent");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_t *expected = bson_new();
+    BSON_APPEND_NULL(expected, "nonexistent");
+
+    TEST_ASSERT_TRUE(bson_docs_equal(result, expected));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    bson_destroy(expected);
+    return 0;
+}
+
+TEST(extract_partial_fields_exist) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "name", "Eve");
+    BSON_APPEND_INT32(doc, "age", 28);
+
+    bson_t *keys = make_keys_3("name", "missing", "age");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_t *expected = bson_new();
+    BSON_APPEND_UTF8(expected, "name", "Eve");
+    BSON_APPEND_NULL(expected, "missing");
+    BSON_APPEND_INT32(expected, "age", 28);
+
+    TEST_ASSERT_TRUE(bson_docs_equal(result, expected));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    bson_destroy(expected);
+    return 0;
+}
+
+TEST(extract_dotted_field) {
+    bson_t *doc = bson_new();
+    bson_t address;
+
+    BSON_APPEND_UTF8(doc, "name", "Frank");
+    bson_append_document_begin(doc, "address", -1, &address);
+    BSON_APPEND_UTF8(&address, "city", "Boston");
+    BSON_APPEND_UTF8(&address, "zip", "02101");
+    bson_append_document_end(doc, &address);
+
+    bson_t *keys = make_keys_1("address.city");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    /* Resultado deve ter "address.city": "Boston" */
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "address.city"));
+    TEST_ASSERT_EQUAL(BSON_TYPE_UTF8, bson_iter_type(&iter));
+    TEST_ASSERT_EQUAL_STRING("Boston", bson_iter_utf8(&iter, NULL));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_dotted_missing) {
+    bson_t *doc = bson_new();
+    bson_t address;
+
+    BSON_APPEND_UTF8(doc, "name", "Grace");
+    bson_append_document_begin(doc, "address", -1, &address);
+    BSON_APPEND_UTF8(&address, "city", "Chicago");
+    bson_append_document_end(doc, &address);
+
+    bson_t *keys = make_keys_1("address.country");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    /* Campo não existe, deve ser null */
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "address.country"));
+    TEST_ASSERT_EQUAL(BSON_TYPE_NULL, bson_iter_type(&iter));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_deep_dotted) {
+    bson_t *doc = bson_new();
+    bson_t level1, level2;
+
+    bson_append_document_begin(doc, "a", -1, &level1);
+    bson_append_document_begin(&level1, "b", -1, &level2);
+    BSON_APPEND_INT32(&level2, "c", 42);
+    bson_append_document_end(&level1, &level2);
+    bson_append_document_end(doc, &level1);
+
+    bson_t *keys = make_keys_1("a.b.c");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "a.b.c"));
+    TEST_ASSERT_EQUAL(BSON_TYPE_INT32, bson_iter_type(&iter));
+    TEST_ASSERT_EQUAL(42, bson_iter_int32(&iter));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_empty_doc) {
+    bson_t *doc = bson_new();
+    bson_t *keys = make_keys_2("name", "age");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_t *expected = bson_new();
+    BSON_APPEND_NULL(expected, "name");
+    BSON_APPEND_NULL(expected, "age");
+
+    TEST_ASSERT_TRUE(bson_docs_equal(result, expected));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    bson_destroy(expected);
+    return 0;
+}
+
+TEST(extract_empty_keys) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "name", "Henry");
+
+    bson_t *keys = bson_new(); /* empty */
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_t *expected = bson_new(); /* empty */
+    TEST_ASSERT_TRUE(bson_docs_equal(result, expected));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    bson_destroy(expected);
+    return 0;
+}
+
+TEST(extract_preserves_key_order) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "z", "last");
+    BSON_APPEND_UTF8(doc, "a", "first");
+    BSON_APPEND_UTF8(doc, "m", "middle");
+
+    /* Keys em ordem diferente do doc */
+    bson_t *keys = make_keys_3("m", "z", "a");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    /* Verificar ordem: m, z, a */
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init(&iter, result));
+
+    TEST_ASSERT_TRUE(bson_iter_next(&iter));
+    TEST_ASSERT_EQUAL_STRING("m", bson_iter_key(&iter));
+
+    TEST_ASSERT_TRUE(bson_iter_next(&iter));
+    TEST_ASSERT_EQUAL_STRING("z", bson_iter_key(&iter));
+
+    TEST_ASSERT_TRUE(bson_iter_next(&iter));
+    TEST_ASSERT_EQUAL_STRING("a", bson_iter_key(&iter));
+
+    TEST_ASSERT_FALSE(bson_iter_next(&iter));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_oid_field) {
+    bson_t *doc = bson_new();
+    bson_oid_t oid;
+    bson_oid_init_from_string(&oid, "507f1f77bcf86cd799439011");
+    BSON_APPEND_OID(doc, "_id", &oid);
+    BSON_APPEND_UTF8(doc, "name", "Ivy");
+
+    bson_t *keys = make_keys_1("_id");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "_id"));
+    TEST_ASSERT_EQUAL(BSON_TYPE_OID, bson_iter_type(&iter));
+
+    const bson_oid_t *result_oid = bson_iter_oid(&iter);
+    TEST_ASSERT_EQUAL(0, bson_oid_compare(&oid, result_oid));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_bool_field) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_BOOL(doc, "active", true);
+    BSON_APPEND_BOOL(doc, "verified", false);
+
+    bson_t *keys = make_keys_2("active", "verified");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "active"));
+    TEST_ASSERT_TRUE(bson_iter_bool(&iter));
+
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "verified"));
+    TEST_ASSERT_FALSE(bson_iter_bool(&iter));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_datetime_field) {
+    bson_t *doc = bson_new();
+    int64_t ts = 1702300800000LL;
+    BSON_APPEND_DATE_TIME(doc, "created", ts);
+
+    bson_t *keys = make_keys_1("created");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "created"));
+    TEST_ASSERT_EQUAL(BSON_TYPE_DATE_TIME, bson_iter_type(&iter));
+    TEST_ASSERT_EQUAL(ts, bson_iter_date_time(&iter));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_double_field) {
+    bson_t *doc = bson_new();
+    BSON_APPEND_DOUBLE(doc, "price", 19.99);
+    BSON_APPEND_DOUBLE(doc, "tax", 1.50);
+
+    bson_t *keys = make_keys_1("price");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "price"));
+    TEST_ASSERT_EQUAL(BSON_TYPE_DOUBLE, bson_iter_type(&iter));
+    /* Double comparison with tolerance */
+    double diff = bson_iter_double(&iter) - 19.99;
+    TEST_ASSERT_TRUE(diff < 0.001 && diff > -0.001);
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_array_field) {
+    bson_t *doc = bson_new();
+    bson_t arr;
+
+    BSON_APPEND_UTF8(doc, "name", "Jack");
+    bson_append_array_begin(doc, "tags", -1, &arr);
+    BSON_APPEND_UTF8(&arr, "0", "red");
+    BSON_APPEND_UTF8(&arr, "1", "blue");
+    bson_append_array_end(doc, &arr);
+
+    bson_t *keys = make_keys_1("tags");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "tags"));
+    TEST_ASSERT_EQUAL(BSON_TYPE_ARRAY, bson_iter_type(&iter));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_nested_doc_field) {
+    bson_t *doc = bson_new();
+    bson_t nested;
+
+    BSON_APPEND_UTF8(doc, "name", "Kate");
+    bson_append_document_begin(doc, "meta", -1, &nested);
+    BSON_APPEND_INT32(&nested, "version", 1);
+    BSON_APPEND_BOOL(&nested, "active", true);
+    bson_append_document_end(doc, &nested);
+
+    bson_t *keys = make_keys_1("meta");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "meta"));
+    TEST_ASSERT_EQUAL(BSON_TYPE_DOCUMENT, bson_iter_type(&iter));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_binary_field) {
+    bson_t *doc = bson_new();
+    uint8_t data[] = {0xDE, 0xAD, 0xBE, 0xEF};
+    BSON_APPEND_BINARY(doc, "data", BSON_SUBTYPE_BINARY, data, 4);
+
+    bson_t *keys = make_keys_1("data");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init_find(&iter, result, "data"));
+    TEST_ASSERT_EQUAL(BSON_TYPE_BINARY, bson_iter_type(&iter));
+
+    bson_subtype_t subtype;
+    uint32_t len;
+    const uint8_t *bin;
+    bson_iter_binary(&iter, &subtype, &len, &bin);
+    TEST_ASSERT_EQUAL(4, len);
+    TEST_ASSERT_EQUAL_MEMORY(data, bin, 4);
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+TEST(extract_compound_index_realistic) {
+    /* Simula índice composto: {lastName: 1, firstName: 1, age: 1} */
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "firstName", "John");
+    BSON_APPEND_UTF8(doc, "lastName", "Doe");
+    BSON_APPEND_INT32(doc, "age", 30);
+    BSON_APPEND_UTF8(doc, "email", "john@example.com");
+    BSON_APPEND_BOOL(doc, "active", true);
+
+    bson_t *keys = make_keys_3("lastName", "firstName", "age");
+    bson_t *result = bson_extract_index_key(doc, keys);
+
+    TEST_ASSERT_NOT_NULL(result);
+
+    /* Verificar ordem e valores */
+    bson_iter_t iter;
+    TEST_ASSERT_TRUE(bson_iter_init(&iter, result));
+
+    TEST_ASSERT_TRUE(bson_iter_next(&iter));
+    TEST_ASSERT_EQUAL_STRING("lastName", bson_iter_key(&iter));
+    TEST_ASSERT_EQUAL_STRING("Doe", bson_iter_utf8(&iter, NULL));
+
+    TEST_ASSERT_TRUE(bson_iter_next(&iter));
+    TEST_ASSERT_EQUAL_STRING("firstName", bson_iter_key(&iter));
+    TEST_ASSERT_EQUAL_STRING("John", bson_iter_utf8(&iter, NULL));
+
+    TEST_ASSERT_TRUE(bson_iter_next(&iter));
+    TEST_ASSERT_EQUAL_STRING("age", bson_iter_key(&iter));
+    TEST_ASSERT_EQUAL(30, bson_iter_int32(&iter));
+
+    TEST_ASSERT_FALSE(bson_iter_next(&iter));
+
+    bson_destroy(doc);
+    bson_destroy(keys);
+    bson_destroy(result);
+    return 0;
+}
+
+/* ============================================================
  * MAIN
  * ============================================================ */
 
@@ -603,5 +1151,29 @@ TEST_SUITE_BEGIN("bson_compare tests")
     /* Múltiplos campos */
     RUN_TEST(test_multi_field_first_differs);
     RUN_TEST(test_multi_field_second_differs);
+
+    /* bson_extract_index_key */
+    RUN_TEST(test_extract_null_doc);
+    RUN_TEST(test_extract_null_keys);
+    RUN_TEST(test_extract_single_field_string);
+    RUN_TEST(test_extract_single_field_int32);
+    RUN_TEST(test_extract_multiple_fields);
+    RUN_TEST(test_extract_three_fields);
+    RUN_TEST(test_extract_missing_field_becomes_null);
+    RUN_TEST(test_extract_partial_fields_exist);
+    RUN_TEST(test_extract_dotted_field);
+    RUN_TEST(test_extract_dotted_missing);
+    RUN_TEST(test_extract_deep_dotted);
+    RUN_TEST(test_extract_empty_doc);
+    RUN_TEST(test_extract_empty_keys);
+    RUN_TEST(test_extract_preserves_key_order);
+    RUN_TEST(test_extract_oid_field);
+    RUN_TEST(test_extract_bool_field);
+    RUN_TEST(test_extract_datetime_field);
+    RUN_TEST(test_extract_double_field);
+    RUN_TEST(test_extract_array_field);
+    RUN_TEST(test_extract_nested_doc_field);
+    RUN_TEST(test_extract_binary_field);
+    RUN_TEST(test_extract_compound_index_realistic);
 
 TEST_SUITE_END()

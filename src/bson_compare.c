@@ -309,9 +309,68 @@ int mongodb_compare_iter(const bson_iter_t *a, const bson_iter_t *b) {
         }
 
         default:
-            /* Tipo “estranho” mas com mesma precedência:
+            /* Tipo "estranho" mas com mesma precedência:
              * aqui você pode dar um assert() em debug, se quiser.
              */
             return 0;
     }
+}
+
+/* ============================================================
+ * 7) HELPER: APPEND DE VALOR DO ITERADOR PARA DOCUMENTO
+ * ============================================================ */
+
+static bool bson_append_iter_value(bson_t *dest, const char *key, const bson_iter_t *iter) {
+    const bson_value_t *value = bson_iter_value(iter);
+    return bson_append_value(dest, key, -1, value);
+}
+
+/* ============================================================
+ * 8) EXTRAÇÃO DE INDEX KEY
+ *
+ *    Dado um documento e uma especificação de índice (keys),
+ *    extrai os campos correspondentes na ordem das keys.
+ *    Suporta dot notation (ex: "address.city").
+ * ============================================================ */
+
+bson_t* bson_extract_index_key(const bson_t *doc, const bson_t *keys) {
+    if (!doc || !keys) return NULL;
+
+    bson_t *result = bson_new();
+    if (!result) return NULL;
+
+    bson_iter_t keys_iter;
+    if (!bson_iter_init(&keys_iter, keys)) {
+        bson_destroy(result);
+        return NULL;
+    }
+
+    while (bson_iter_next(&keys_iter)) {
+        const char *field = bson_iter_key(&keys_iter);
+        bson_iter_t doc_iter, descendant;
+        bool found = false;
+
+        /* Tenta encontrar campo direto primeiro */
+        if (bson_iter_init_find(&doc_iter, doc, field)) {
+            found = true;
+        }
+        /* Se não encontrou e tem '.', tenta dot notation com find_descendant */
+        else if (strchr(field, '.') != NULL) {
+            if (bson_iter_init(&doc_iter, doc) &&
+                bson_iter_find_descendant(&doc_iter, field, &descendant)) {
+                doc_iter = descendant;
+                found = true;
+            }
+        }
+
+        if (found) {
+            /* Campo encontrado: append com o nome original do field */
+            bson_append_iter_value(result, field, &doc_iter);
+        } else {
+            /* Campo não existe: append null (MongoDB behavior) */
+            bson_append_null(result, field, -1);
+        }
+    }
+
+    return result;
 }

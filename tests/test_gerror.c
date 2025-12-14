@@ -4,14 +4,6 @@
 #include "gerror.h"
 #include <stdarg.h>
 
-// Test helper function
-void test_vset_helper(gerror_t *error, const char *lib, int code, const char *format, ...) {
-    va_list args;
-    va_start(args, format);
-    vset_error(error, lib, code, format, args);
-    va_end(args);
-}
-
 TEST(error_initialization) {
     gerror_t error = {0};
     
@@ -55,17 +47,6 @@ TEST(set_error_null_error) {
     return 0;
 }
 
-TEST(vset_error_test) {
-    gerror_t error = {0};
-    
-    test_vset_helper(&error, "vtest", 99, "Value: %d, String: %s", 42, "hello");
-    
-    TEST_ASSERT_EQUAL(99, error.code);
-    TEST_ASSERT_EQUAL_STRING("vtest", error.lib);
-    TEST_ASSERT_EQUAL_STRING("Value: 42, String: hello", error.message);
-    
-    return 0;
-}
 
 TEST(error_message_basic) {
     gerror_t error = {0};
@@ -201,7 +182,6 @@ TEST_SUITE_BEGIN("gerror tests")
     RUN_TEST(test_set_error_basic);
     RUN_TEST(test_set_error_null_lib);
     RUN_TEST(test_set_error_null_error);
-    RUN_TEST(test_vset_error_test);
     RUN_TEST(test_error_message_basic);
     RUN_TEST(test_error_message_empty);
     RUN_TEST(test_error_message_null);
