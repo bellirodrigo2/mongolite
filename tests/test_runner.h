@@ -118,4 +118,16 @@ static const char* current_test = NULL;
 #define ASSERT_NE TEST_ASSERT_NOT_EQUAL
 #define ASSERT_STR_EQ TEST_ASSERT_EQUAL_STRING
 
+// TEST_ASSERT with format string message
+#define TEST_ASSERT(condition, ...) \
+    do { \
+        assertions_run++; \
+        if (!(condition)) { \
+            printf(COLOR_RED "  FAIL %s:%d: " COLOR_RESET, __FILE__, __LINE__); \
+            printf(__VA_ARGS__); \
+            printf("\n"); \
+            return 1; \
+        } \
+    } while(0)
+
 #endif // TEST_RUNNER_H

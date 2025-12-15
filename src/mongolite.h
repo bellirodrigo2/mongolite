@@ -11,12 +11,100 @@
 extern "C" {
 #endif
 
-// Forward declarations
+/* ============================================================
+ * Forward Declarations (opaque types)
+ * ============================================================ */
+
 typedef struct mongolite_db mongolite_db_t;
 typedef struct mongolite_cursor mongolite_cursor_t;
-typedef struct db_config db_config_t;
-typedef struct col_config col_config_t;
-typedef struct index_config index_config_t;
+
+/* ============================================================
+ * Configuration Structures
+ *
+ * All fields are optional - zero/NULL values use defaults.
+ * Structures are designed for extensibility (add new fields at end).
+ * ============================================================ */
+
+/*
+ * Database configuration (passed to mongolite_open)
+ *
+ * Example usage:
+ *   db_config_t config = {0};  // Zero-init for defaults
+ *   config.max_bytes = 10ULL * 1024 * 1024 * 1024;  // 10GB
+ *   config.metadata = my_app_metadata_bson;
+ *   mongolite_open("./mydb", &db, &config, &error);
+ */
+typedef struct db_config {
+    /* LMDB backend settings */
+    size_t max_bytes;           /* Max database size (default: 1GB) */
+    unsigned int max_dbs;       /* Max named trees (default: 256) */
+    unsigned int lmdb_flags;    /* LMDB flags: MDB_NOSYNC, MDB_WRITEMAP, etc. */
+
+    /* Mongolite limits */
+    size_t max_collections;     /* Soft limit on collections (default: 128) */
+
+    /* Document cache settings (0 = disabled) */
+    size_t cache_max_items;     /* Max cached documents */
+    int64_t cache_max_bytes;    /* Max cache memory in bytes */
+    uint64_t cache_ttl_ms;      /* Default cache TTL in milliseconds */
+
+    /* User-defined metadata (stored in DB, retrievable via mongolite_db_metadata) */
+    const bson_t *metadata;     /* Optional BSON - will be copied */
+
+    /* Reserved for future expansion */
+    void *_reserved[4];
+} db_config_t;
+
+/*
+ * Collection configuration (passed to mongolite_collection_create)
+ *
+ * Example:
+ *   col_config_t config = {0};
+ *   config.capped = true;
+ *   config.max_docs = 10000;
+ *   mongolite_collection_create(db, "logs", &config, &error);
+ */
+typedef struct col_config {
+    /* Capped collection settings */
+    bool capped;                /* Is this a capped collection? */
+    int64_t max_docs;           /* Max documents (capped only) */
+    int64_t max_bytes;          /* Max size in bytes (capped only) */
+
+    /* Validation (future) */
+    const bson_t *validator;    /* JSON Schema validator document */
+
+    /* User-defined metadata */
+    const bson_t *metadata;     /* Optional BSON - will be copied */
+
+    /* Reserved for future expansion */
+    void *_reserved[4];
+} col_config_t;
+
+/*
+ * Index configuration (passed to mongolite_create_index)
+ *
+ * Example:
+ *   index_config_t config = {0};
+ *   config.unique = true;
+ *   mongolite_create_index(db, "users", keys, "email_unique", &config, &error);
+ */
+typedef struct index_config {
+    bool unique;                /* Enforce uniqueness */
+    bool sparse;                /* Skip docs without indexed fields */
+    bool background;            /* Build in background (future) */
+
+    /* TTL index */
+    int64_t expire_after_seconds;  /* Auto-delete after N seconds (0 = disabled) */
+
+    /* Partial filter (future) */
+    const bson_t *partial_filter;
+
+    /* User-defined metadata */
+    const bson_t *metadata;     /* Optional BSON - will be copied */
+
+    /* Reserved for future expansion */
+    void *_reserved[4];
+} index_config_t;
 
 
 
@@ -147,6 +235,18 @@ mongolite_cursor_t* mongolite_aggregate(mongolite_db_t *db, const char *collecti
 
 const char* mongolite_version(void);
 const char* mongolite_errstr(int error_code);
+
+// Database metadata (user-defined, from db_config)
+const bson_t* mongolite_db_metadata(mongolite_db_t *db);
+int mongolite_db_set_metadata(mongolite_db_t *db, const bson_t *metadata, gerror_t *error);
+
+// Collection metadata
+const bson_t* mongolite_collection_metadata(mongolite_db_t *db, const char *collection, gerror_t *error);
+int mongolite_collection_set_metadata(mongolite_db_t *db, const char *collection,
+                                      const bson_t *metadata, gerror_t *error);
+
+// Database sync (flush to disk)
+int mongolite_sync(mongolite_db_t *db, bool force, gerror_t *error);
 
 // BSON helpers specific to mongolite
 bson_t* mongolite_matcher_regex(const char *field, const char *pattern, const char *options);

@@ -211,6 +211,37 @@ set(WTREE_SOURCES
 add_library(wtree STATIC ${WTREE_SOURCES})
 
 # ============================================================
+# ========================= MONGOLITE =========================
+# ============================================================
+
+# mongolite sources (includes wtree + all mongolite modules)
+set(MONGOLITE_SOURCES
+    ${SRC_DIR}/gerror.c
+    ${SRC_DIR}/wtree.c
+    ${SRC_DIR}/mongolite_db.c
+    ${SRC_DIR}/mongolite_collection.c
+    ${SRC_DIR}/mongolite_insert.c
+    ${SRC_DIR}/key_compare.c
+    ${LMDB_SOURCES}
+)
+
+add_library(mongolite STATIC ${MONGOLITE_SOURCES})
+add_dependencies(mongolite libbson bsonmatch)
+
+target_include_directories(mongolite PUBLIC
+    ${SRC_DIR}
+    ${LMDB_DIR}
+    ${BSONMATCH_DIR}/src
+    ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
+)
+
+target_link_libraries(mongolite PUBLIC
+    bsonmatch
+    ${LOCAL_LIBBSON_LIB}
+    ${SYSTEM_NETWORK_LIBS}
+)
+
+# ============================================================
 # ========================= TESTS ============================
 # ============================================================
 
@@ -220,6 +251,7 @@ enable_testing()
 
 add_executable(test_gerror
     ${TEST_DIR}/test_gerror.c
+    ${SRC_DIR}/gerror.c
 )
 add_test(NAME test_gerror COMMAND test_gerror)
 
@@ -228,12 +260,14 @@ add_test(NAME test_gerror COMMAND test_gerror)
 add_executable(test_wtree
     ${TEST_DIR}/test_wtree.c
     ${WTREE_SOURCES}
+    ${SRC_DIR}/gerror.c
 )
 add_test(NAME test_wtree COMMAND test_wtree)
 
 add_executable(test_wtree_iter
     ${TEST_DIR}/test_wtree_iter.c
     ${WTREE_SOURCES}
+    ${SRC_DIR}/gerror.c
 )
 add_test(NAME test_wtree_iter COMMAND test_wtree_iter)
 
@@ -257,7 +291,34 @@ add_dependencies(test_bsonmatch bsonmatch)
 target_link_libraries(test_bsonmatch PRIVATE bsonmatch)
 add_test(NAME test_bsonmatch COMMAND test_bsonmatch)
 
-set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch
+# --- test para mongolite_db (Phase 1)
+
+add_executable(test_mongolite_db
+    ${TEST_DIR}/test_mongolite_db.c
+)
+add_dependencies(test_mongolite_db mongolite)
+target_link_libraries(test_mongolite_db PRIVATE mongolite)
+add_test(NAME test_mongolite_db COMMAND test_mongolite_db)
+
+# --- test para mongolite_collection (Phase 2)
+
+add_executable(test_mongolite_collection
+    ${TEST_DIR}/test_mongolite_collection.c
+)
+add_dependencies(test_mongolite_collection mongolite)
+target_link_libraries(test_mongolite_collection PRIVATE mongolite)
+add_test(NAME test_mongolite_collection COMMAND test_mongolite_collection)
+
+# --- test para mongolite_insert (Phase 3)
+
+add_executable(test_mongolite_insert
+    ${TEST_DIR}/test_mongolite_insert.c
+)
+add_dependencies(test_mongolite_insert mongolite)
+target_link_libraries(test_mongolite_insert PRIVATE mongolite)
+add_test(NAME test_mongolite_insert COMMAND test_mongolite_insert)
+
+set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR}
 )
@@ -269,5 +330,5 @@ set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare te
 
 add_custom_target(run-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch
+    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert
 )
