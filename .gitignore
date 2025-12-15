@@ -167,3 +167,6 @@ core.*
 *.deb
 *.rpm
 dist/
+
+# AI tools
+.claude/
