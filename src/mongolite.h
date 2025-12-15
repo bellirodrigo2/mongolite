@@ -61,28 +61,49 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
 int mongolite_insert_many(mongolite_db_t *db, const char *collection,
                          const bson_t **docs, size_t n_docs, 
                          bson_oid_t **inserted_ids, gerror_t *error);
+int mongolite_insert_one_json(mongolite_db_t *db, const char *collection, 
+                        const char *json_str, bson_oid_t *inserted_id, gerror_t *error);
+
+int mongolite_insert_many_json(mongolite_db_t *db, const char *collection,
+                         const char **json_strs, size_t n_docs, 
+                         bson_oid_t **inserted_ids, gerror_t *error);
 // Find
 bson_t* mongolite_find_one(mongolite_db_t *db, const char *collection,
                            const bson_t *filter, const bson_t *projection,
                            gerror_t *error);
 
+const char* mongolite_find_one_json(mongolite_db_t *db, const char *collection,
+                           const char *filter_json, const char *projection_json,
+                           gerror_t *error);
+
 mongolite_cursor_t* mongolite_find(mongolite_db_t *db, const char *collection,
                                    const bson_t *filter, const bson_t *projection,
+                                   gerror_t *error);
+char** mongolite_find_json(mongolite_db_t *db, const char *collection,
+                                   const char *filter_json, const char *projection_json,
                                    gerror_t *error);
 
 // Update
 int mongolite_update_one(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, const bson_t *update,
                          bool upsert, gerror_t *error);
+int mongolite_update_one_json(mongolite_db_t *db, const char *collection,
+                         const char *filter_json, const char *update_json,
+                         bool upsert, gerror_t *error);
 
 int mongolite_update_many(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, const bson_t *update,
+                         bool upsert, int64_t *modified_count, gerror_t *error);
+int mongolite_update_many_json(mongolite_db_t *db, const char *collection,
+                         const char *filter_json, const char *update_json,
                          bool upsert, int64_t *modified_count, gerror_t *error);
 
 int mongolite_replace_one(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, const bson_t *replacement,
                          bool upsert, gerror_t *error);
-
+int mongolite_replace_one_json(mongolite_db_t *db, const char *collection,
+                         const char *filter_json, const char *replacement_json,
+                         bool upsert, gerror_t *error);
 // Delete
 int mongolite_delete_one(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, gerror_t *error);

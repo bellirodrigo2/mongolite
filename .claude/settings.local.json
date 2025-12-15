@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(dir \"C:\\Users\\RBELLI\\Desktop\\code\\mongolite\\external\")",
+      "Bash(git submodule:*)"
+    ]
+  }
+}

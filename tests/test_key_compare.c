@@ -1,5 +1,5 @@
 #include "test_runner.h"
-#include "bson_compare.h"
+#include "key_compare.h"
 
 /* ============================================================
  * HELPERS

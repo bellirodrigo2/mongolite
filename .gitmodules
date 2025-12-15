@@ -4,3 +4,6 @@
 [submodule "external/mongoc"]
 	path = external/mongoc
 	url = https://github.com/mongodb/mongo-c-driver.git
+[submodule "external/bsonmatch"]
+	path = external/bsonmatch
+	url = https://github.com/bellirodrigo2/bsonmatch.git

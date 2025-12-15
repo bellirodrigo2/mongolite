@@ -4,7 +4,7 @@
 #include <stdlib.h>     // strtod
 #include <math.h>       // isnan, isinf (se quiser usar)
 
-#include "bson_compare.h"
+#include "key_compare.h"
 
 /* ============================================================
  * 1) PRECEDÊNCIA DE TIPOS (ORDEM OFICIAL DO MONGODB)

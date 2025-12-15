@@ -2,20 +2,33 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
+#include <stdio.h>
 
 #include "uthash.h"
-#include "utlist.h"
 
 /* ============================================================
- *  Internal key storage (always 12 bytes)
+ *  Internal helpers / key packing
  * ============================================================
- *  - OID mode: stores 12 OID bytes (inline).
- *  - BYTES mode: stores { void* ptr ; uint32_t len } packed into 12 bytes.
  *
- *  Note: key bytes themselves live at ptr (either user memory or owned copy).
+ * For OID mode, we store 12 bytes inline (BSON OID).
+ * For INT64 mode, we store 8 bytes inline (int64_t).
+ * For BYTES mode, we store:
+ *   - pointer bytes (sizeof(void*))
+ *   - 32-bit length (uint32_t)
+ *   The key bytes themselves live at ptr (either user memory or owned copy).
  */
-#define FLEXCACHE_INLINE_KEY_SIZE 12
+
+#define FLEXCACHE_OID_INLINE_SIZE 12
+#define FLEXCACHE_PTRLEN_INLINE_SIZE (sizeof(void*) + sizeof(uint32_t))
+#define FLEXCACHE_INLINE_KEY_SIZE \
+    ((FLEXCACHE_PTRLEN_INLINE_SIZE > FLEXCACHE_OID_INLINE_SIZE) ? \
+     FLEXCACHE_PTRLEN_INLINE_SIZE : FLEXCACHE_OID_INLINE_SIZE)
+
+/* C99-compatible static assert */
+#define FLEXCACHE_STATIC_ASSERT(cond, msg) \
+    typedef char flexcache_static_assert_##msg[(cond) ? 1 : -1]
+
+FLEXCACHE_STATIC_ASSERT(FLEXCACHE_INLINE_KEY_SIZE >= 12, inline_key_size_must_be_at_least_12);
 
 static inline void
 pack_ptr_len(uint8_t out[FLEXCACHE_INLINE_KEY_SIZE], const void *p, uint32_t len)
@@ -43,7 +56,7 @@ unpack_len(const uint8_t in[FLEXCACHE_INLINE_KEY_SIZE])
 }
 
 /* ============================================================
- *  Internal bcache (hidden)
+ *  Cache node / base store
  * ============================================================ */
 typedef struct bcache_node {
     uint8_t key_storage[FLEXCACHE_INLINE_KEY_SIZE];
@@ -53,83 +66,19 @@ typedef struct bcache_node {
 
     UT_hash_handle hh;
 
-    struct bcache_node *prev, *next;
+    struct bcache_node *prev;
+    struct bcache_node *next;
 } bcache_node;
 
 typedef struct bcache {
-    bcache_node *hashmap;
-    bcache_node *list;
+    bcache_node *map;   /* uthash table head */
+    bcache_node *head;  /* policy list head (FIFO/LRU-ish) */
+    bcache_node *tail;
+
     size_t  item_count;
     int64_t total_bytes;
 } bcache;
 
-static void
-bcache_init(bcache *c)
-{
-    memset(c, 0, sizeof(*c));
-}
-
-static bcache_node *
-bcache_node_new(void *value, int64_t byte_size)
-{
-    if (byte_size < 0) return NULL;
-    bcache_node *n = (bcache_node *)uthash_malloc(sizeof *n);
-    if (!n) return NULL;
-    memset(n->key_storage, 0, sizeof(n->key_storage));
-    n->value = value;
-    n->byte_size = byte_size;
-    n->prev = n->next = NULL;
-    return n;
-}
-
-static int
-bcache_insert_keyptr(bcache *c, bcache_node *n, const void *keyptr, unsigned keylen)
-{
-    if (!c || !n || !keyptr || keylen == 0) return -1;
-
-    bcache_node *existing = NULL;
-    HASH_FIND(hh, c->hashmap, keyptr, keylen, existing);
-    if (existing) return -1;
-
-    HASH_ADD_KEYPTR(hh, c->hashmap, keyptr, keylen, n);
-    DL_APPEND(c->list, n);
-
-    c->item_count++;
-    c->total_bytes += n->byte_size;
-    return 0;
-}
-
-static bcache_node *
-bcache_get(bcache *c, const void *keyptr, unsigned keylen)
-{
-    bcache_node *n = NULL;
-    HASH_FIND(hh, c->hashmap, keyptr, keylen, n);
-    return n;
-}
-
-static void
-bcache_remove_node(bcache *c, bcache_node *n)
-{
-    if (!c || !n) return;
-    HASH_DEL(c->hashmap, n);
-    DL_DELETE(c->list, n);
-    c->item_count--;
-    c->total_bytes -= n->byte_size;
-    uthash_free(n, sizeof *n);
-}
-
-/* list reorder helpers (for LRU) */
-static void
-bcache_move_back(bcache *c, bcache_node *n)
-{
-    if (!c || !n) return;
-    DL_DELETE(c->list, n);
-    DL_APPEND(c->list, n);
-}
-
-/* ============================================================
- *  fxcache internals
- * ============================================================ */
 typedef struct fxcache_entry {
     void    *user_value;
     uint64_t expires_at_ms;
@@ -139,53 +88,113 @@ struct fxcache {
     bcache base;
 
     fxcache_key_mode key_mode;
-    fxcache_copy_fn key_copy;
-    fxcache_free_fn key_free;
 
     fxcache_now_fn now_fn;
 
+    size_t  item_max;
+    int64_t byte_max;
+    uint64_t scan_interval_ms;
+    uint64_t last_scan_ms;
+
+    fxcache_copy_fn key_copy;
+    fxcache_free_fn key_free;
     fxcache_copy_fn value_copy;
     fxcache_free_fn value_free;
 
     fxcache_ondelete_fn ondelete;
-
-    void (*touch_fn)(bcache *, bcache_node *, void *);
-    bcache_node *(*pop_fn)(bcache *, void *);
-
-    size_t  item_max;
-    int64_t byte_max;
-
-    uint64_t scan_interval_ms;
-    uint64_t last_scan_ms;
-
     void *user_ctx;
+
+    /* policy hooks */
+    void (*touch_fn)(bcache *b, bcache_node *n, void *policy_ctx);
+    bcache_node *(*pop_fn)(bcache *b, void *policy_ctx);
     void *policy_ctx;
 };
 
 /* ============================================================
- *  Helpers
+ *  List helpers (policy list)
  * ============================================================ */
+static inline void
+list_remove(bcache *b, bcache_node *n)
+{
+    if (!n) return;
+    if (n->prev) n->prev->next = n->next;
+    else         b->head = n->next;
+
+    if (n->next) n->next->prev = n->prev;
+    else         b->tail = n->prev;
+
+    n->prev = n->next = NULL;
+}
+
+static inline void
+list_push_tail(bcache *b, bcache_node *n)
+{
+    n->prev = b->tail;
+    n->next = NULL;
+    if (b->tail) b->tail->next = n;
+    else         b->head = n;
+    b->tail = n;
+}
+
+/* ============================================================
+ *  uthash wrappers
+ * ============================================================ */
+static inline bcache_node *
+bcache_get(bcache *b, const void *keyptr, unsigned keylen)
+{
+    bcache_node *n = NULL;
+    HASH_FIND(hh, b->map, keyptr, keylen, n);
+    return n;
+}
+
+static inline int
+bcache_insert_keyptr(bcache *b, bcache_node *n, const void *keyptr, unsigned keylen)
+{
+    bcache_node *existing = NULL;
+    HASH_FIND(hh, b->map, keyptr, keylen, existing);
+    if (existing) return -1;
+
+    HASH_ADD_KEYPTR(hh, b->map, keyptr, keylen, n);
+    b->item_count++;
+    b->total_bytes += n->byte_size;
+    return 0;
+}
+
+static inline void
+bcache_remove_keyptr(bcache *b, bcache_node *n)
+{
+    if (!n) return;
+    HASH_DEL(b->map, n);
+    b->item_count--;
+    b->total_bytes -= n->byte_size;
+}
+
+/* ============================================================
+ *  Eviction / delete helpers
+ * ============================================================ */
+static void
+uthash_free(bcache_node *n, size_t sz)
+{
+    (void)sz;
+    free(n);
+}
+
+static bcache_node *
+bcache_node_new(void *value, int64_t byte_size)
+{
+    bcache_node *n = (bcache_node *)calloc(1, sizeof(*n));
+    if (!n) return NULL;
+    n->value = value;
+    n->byte_size = byte_size;
+    return n;
+}
+
 static inline uint64_t
 safe_expiration(uint64_t now_ms, uint64_t ttl_ms)
 {
-    if (ttl_ms == 0) return 0;
-    if (now_ms > UINT64_MAX - ttl_ms) return UINT64_MAX;
+    uint64_t max = UINT64_MAX;
+    if (ttl_ms > max - now_ms) return max;
     return now_ms + ttl_ms;
-}
-
-static inline const void *
-node_keyptr(const fxcache *fc, const bcache_node *n, unsigned *out_len)
-{
-    if (fc->key_mode == FLEXCACHE_KEY_OID) {
-        if (out_len) *out_len = 12u;
-        return n->key_storage;
-    }
-
-    /* BYTES */
-    const void *p = unpack_ptr(n->key_storage);
-    uint32_t len = unpack_len(n->key_storage);
-    if (out_len) *out_len = (unsigned)len;
-    return p;
 }
 
 static void
@@ -193,38 +202,65 @@ delete_node(fxcache *fc, bcache_node *n)
 {
     if (!fc || !n) return;
 
+    /* unlink from policy list and hash table */
+    list_remove(&fc->base, n);
+    bcache_remove_keyptr(&fc->base, n);
+
+    /* pull entry */
     fxcache_entry *e = (fxcache_entry *)n->value;
-    void *user_value = e ? e->user_value : NULL;
+    void *user_val = e ? e->user_value : NULL;
 
-    /* Compute key view before removing node */
-    unsigned klen_u = 0;
-    const void *kptr = node_keyptr(fc, n, &klen_u);
-
+    /* Fire ondelete before freeing (key/value are valid during callback only) */
     if (fc->ondelete) {
-        fc->ondelete(kptr, (size_t)klen_u, user_value, n->byte_size, fc->user_ctx);
+        if (fc->key_mode == FLEXCACHE_KEY_OID) {
+            fc->ondelete(n->key_storage, 12, user_val, n->byte_size, fc->user_ctx);
+        } else if (fc->key_mode == FLEXCACHE_KEY_INT64) {
+            fc->ondelete(n->key_storage, sizeof(int64_t), user_val, n->byte_size, fc->user_ctx);
+        } else {
+            const void *kptr = unpack_ptr(n->key_storage);
+            uint32_t klen = unpack_len(n->key_storage);
+            fc->ondelete(kptr, (size_t)klen, user_val, n->byte_size, fc->user_ctx);
+        }
     }
 
-    /* Remove from hash/list and free node memory */
-    bcache_remove_node(&fc->base, n);
-
-    /* Free key bytes if we own them (BYTES mode + key_copy provided) */
-    if (fc->key_mode == FLEXCACHE_KEY_BYTES && fc->key_copy && fc->key_free && kptr) {
-        fc->key_free((void *)kptr, fc->user_ctx);
+    /* free key if owned (BYTES mode only) */
+    if (fc->key_mode == FLEXCACHE_KEY_BYTES && fc->key_copy && fc->key_free) {
+        void *kptr = (void *)unpack_ptr(n->key_storage);
+        if (kptr) fc->key_free(kptr, fc->user_ctx);
     }
 
-    /* Free value if we own it */
-    if (fc->value_free && user_value) {
-        fc->value_free(user_value, fc->user_ctx);
+    /* free value if owned */
+    if (fc->value_free && user_val) {
+        fc->value_free(user_val, fc->user_ctx);
     }
 
     free(e);
+    uthash_free(n, sizeof(*n));
+}
+
+static void
+enforce_limits(fxcache *fc)
+{
+    if (!fc) return;
+
+    /* Evict until within limits */
+    while ((fc->item_max > 0 && fc->base.item_count > fc->item_max) ||
+           (fc->byte_max > 0 && fc->base.total_bytes > fc->byte_max))
+    {
+        bcache_node *victim = NULL;
+        if (fc->pop_fn) victim = fc->pop_fn(&fc->base, fc->policy_ctx);
+        if (!victim) break;
+        delete_node(fc, victim);
+    }
 }
 
 static void
 remove_expired(fxcache *fc, uint64_t now_ms)
 {
+    if (!fc) return;
+
     bcache_node *n, *tmp;
-    HASH_ITER(hh, fc->base.hashmap, n, tmp) {
+    HASH_ITER(hh, fc->base.map, n, tmp) {
         fxcache_entry *e = (fxcache_entry *)n->value;
         if (e && e->expires_at_ms && e->expires_at_ms <= now_ms) {
             delete_node(fc, n);
@@ -232,40 +268,77 @@ remove_expired(fxcache *fc, uint64_t now_ms)
     }
 }
 
-static void
-enforce_limits(fxcache *fc)
-{
-    for (;;) {
-        int over_items = (fc->item_max != 0 && fc->base.item_count > fc->item_max);
-        int over_bytes = (fc->byte_max != 0 && fc->base.total_bytes > fc->byte_max);
-        if (!over_items && !over_bytes) break;
-
-        bcache_node *victim = fc->pop_fn ? fc->pop_fn(&fc->base, fc->policy_ctx) : NULL;
-        if (!victim) break;
-
-        delete_node(fc, victim);
-    }
-}
-
 /* ============================================================
- *  Policy hook setter (internal)
+ *  Policies: FIFO (default)
  * ============================================================ */
 static void
-fxcache_set_policy_hooks(
-    fxcache *fc,
-    void (*touch_fn)(bcache *, bcache_node *, void *),
-    bcache_node *(*pop_fn)(bcache *, void *),
-    void *policy_ctx
-)
+fifo_touch(bcache *b, bcache_node *n, void *policy_ctx)
 {
-    if (!fc) return;
-    fc->touch_fn = touch_fn;
-    fc->pop_fn = pop_fn;
-    fc->policy_ctx = policy_ctx;
+    (void)policy_ctx;
+    if (!b || !n) return;
+    /* FIFO doesn't move on touch */
+}
+
+static bcache_node *
+fifo_pop(bcache *b, void *policy_ctx)
+{
+    (void)policy_ctx;
+    if (!b) return NULL;
+    /* evict from head (oldest) */
+    return b->head;
 }
 
 /* ============================================================
- *  Public API
+ *  Policy: RANDOM
+ * ============================================================ */
+struct fxcache_random_policy {
+    fxcache_rng_fn rng_fn;
+    void *rng_ctx;
+};
+
+static bcache_node *
+random_pop(bcache *b, void *policy_ctx)
+{
+    fxcache_random_policy *p = (fxcache_random_policy *)policy_ctx;
+    if (!b || !p || !p->rng_fn || b->item_count == 0) return NULL;
+
+    /* Choose an index in [0, item_count-1] */
+    uint32_t r = p->rng_fn(p->rng_ctx);
+    size_t idx = (size_t)(r % (uint32_t)b->item_count);
+
+    bcache_node *n = b->head;
+    while (n && idx--) n = n->next;
+    return n ? n : b->head;
+}
+
+fxcache_random_policy *
+fxcache_policy_random_create(fxcache_rng_fn rng_fn, void *rng_ctx)
+{
+    if (!rng_fn) return NULL;
+    fxcache_random_policy *p = (fxcache_random_policy *)calloc(1, sizeof(*p));
+    if (!p) return NULL;
+    p->rng_fn = rng_fn;
+    p->rng_ctx = rng_ctx;
+    return p;
+}
+
+void
+fxcache_policy_random_destroy(fxcache_random_policy *policy)
+{
+    free(policy);
+}
+
+void
+fxcache_policy_random_init(fxcache *fc, fxcache_random_policy *policy)
+{
+    if (!fc || !policy) return;
+    fc->touch_fn = NULL; /* no touch behavior needed */
+    fc->pop_fn   = random_pop;
+    fc->policy_ctx = policy;
+}
+
+/* ============================================================
+ *  Init / create / destroy
  * ============================================================ */
 int
 fxcache_init(
@@ -284,35 +357,29 @@ fxcache_init(
 )
 {
     if (!fc || !now_fn) return -1;
-    if (key_mode != FLEXCACHE_KEY_OID && key_mode != FLEXCACHE_KEY_BYTES) return -1;
+    if (key_mode != FLEXCACHE_KEY_OID && key_mode != FLEXCACHE_KEY_BYTES && key_mode != FLEXCACHE_KEY_INT64) return -1;
 
-    bcache_init(&fc->base);
+    memset(fc, 0, sizeof(*fc));
 
     fc->key_mode = key_mode;
-    fc->key_copy = (key_mode == FLEXCACHE_KEY_BYTES) ? key_copy : NULL;
-    fc->key_free = (key_mode == FLEXCACHE_KEY_BYTES) ? key_free : NULL;
-
-    /* If copying keys, freeing must exist too (otherwise leak) */
-    if (fc->key_copy && !fc->key_free) return -1;
-
     fc->now_fn = now_fn;
-
-    fc->value_copy = value_copy;
-    fc->value_free = value_free;
-
-    fc->ondelete = ondelete;
 
     fc->item_max = item_max;
     fc->byte_max = byte_max;
-
     fc->scan_interval_ms = scan_interval_ms;
     fc->last_scan_ms = 0;
 
+    fc->key_copy = key_copy;
+    fc->key_free = key_free;
+    fc->value_copy = value_copy;
+    fc->value_free = value_free;
+    fc->ondelete = ondelete;
     fc->user_ctx = user_ctx;
-    fc->policy_ctx = NULL;
 
-    fc->touch_fn = NULL;
-    fc->pop_fn = NULL;
+    /* default policy FIFO */
+    fc->touch_fn = fifo_touch;
+    fc->pop_fn = fifo_pop;
+    fc->policy_ctx = NULL;
 
     return 0;
 }
@@ -332,11 +399,13 @@ fxcache_create(
     void *user_ctx
 )
 {
-    fxcache *fc = (fxcache *)malloc(sizeof(*fc));
+    fxcache *fc = (fxcache *)calloc(1, sizeof(*fc));
     if (!fc) return NULL;
 
-    if (fxcache_init(fc, key_mode, now_fn, item_max, byte_max, scan_interval_ms,
-                      key_copy, key_free, value_copy, value_free, ondelete, user_ctx) != 0) {
+    if (fxcache_init(fc, key_mode, now_fn, item_max, byte_max,
+                     scan_interval_ms, key_copy, key_free,
+                     value_copy, value_free, ondelete, user_ctx) != 0)
+    {
         free(fc);
         return NULL;
     }
@@ -347,19 +416,45 @@ void
 fxcache_destroy(fxcache *fc)
 {
     if (!fc) return;
-    while (fc->base.list) {
-        delete_node(fc, fc->base.list);
+
+    /* delete all nodes */
+    bcache_node *n, *tmp;
+    HASH_ITER(hh, fc->base.map, n, tmp) {
+        delete_node(fc, n);
     }
 }
 
 void
-fxcache_free(fxcache *fc)
+fxcache_policy_fifo_init(fxcache *fc)
 {
     if (!fc) return;
-    fxcache_destroy(fc);
-    free(fc);
+    fc->touch_fn = fifo_touch;
+    fc->pop_fn = fifo_pop;
+    fc->policy_ctx = NULL;
 }
 
+/* ============================================================
+ *  Scan scheduling
+ * ============================================================ */
+void
+fxcache_maybe_scan_and_clean(fxcache *fc)
+{
+    if (!fc) return;
+    uint64_t now_ms = fc->now_fn(fc->user_ctx);
+
+    if (fc->scan_interval_ms == 0 ||
+        fc->last_scan_ms == 0 ||
+        (now_ms - fc->last_scan_ms) >= fc->scan_interval_ms)
+    {
+        fc->last_scan_ms = now_ms;
+        remove_expired(fc, now_ms);
+        enforce_limits(fc);
+    }
+}
+
+/* ============================================================
+ *  Public API
+ * ============================================================ */
 int
 fxcache_insert(
     fxcache *fc,
@@ -375,6 +470,9 @@ fxcache_insert(
     if (!fc || !key || key_len == 0 || byte_size < 0) return -2;
 
     if (fc->key_mode == FLEXCACHE_KEY_OID && key_len != 12) {
+        return -2;
+    }
+    if (fc->key_mode == FLEXCACHE_KEY_INT64 && key_len != sizeof(int64_t)) {
         return -2;
     }
 
@@ -413,6 +511,11 @@ fxcache_insert(
         memcpy(n->key_storage, key, 12);
         keyptr = n->key_storage;
         keylen_u = 12u;
+    } else if (fc->key_mode == FLEXCACHE_KEY_INT64) {
+        /* store inline int64 bytes (no allocations) */
+        memcpy(n->key_storage, key, sizeof(int64_t));
+        keyptr = n->key_storage;
+        keylen_u = (unsigned)sizeof(int64_t);
     } else {
         /* BYTES: store a pointer to key bytes + store len in the extra 4 bytes */
         const void *stored = key;
@@ -433,14 +536,17 @@ fxcache_insert(
     if (bcache_insert_keyptr(&fc->base, n, keyptr, keylen_u) != 0) {
         /* duplicate */
         if (fc->key_mode == FLEXCACHE_KEY_BYTES && fc->key_copy && fc->key_free) {
-            const void *p = unpack_ptr(n->key_storage);
-            if (p) fc->key_free((void *)p, fc->user_ctx);
+            void *kptr = (void *)unpack_ptr(n->key_storage);
+            if (kptr) fc->key_free(kptr, fc->user_ctx);
         }
-        uthash_free(n, sizeof(*n));
-        free(e);
         if (fc->value_free && v) fc->value_free(v, fc->user_ctx);
+        free(e);
+        uthash_free(n, sizeof(*n));
         return -1;
     }
+
+    /* add to policy list tail */
+    list_push_tail(&fc->base, n);
 
     enforce_limits(fc);
     return 0;
@@ -451,6 +557,7 @@ fxcache_get(fxcache *fc, const void *key, size_t key_len)
 {
     if (!fc || !key || key_len == 0) return NULL;
     if (fc->key_mode == FLEXCACHE_KEY_OID && key_len != 12) return NULL;
+    if (fc->key_mode == FLEXCACHE_KEY_INT64 && key_len != sizeof(int64_t)) return NULL;
 
     fxcache_maybe_scan_and_clean(fc);
 
@@ -466,7 +573,6 @@ fxcache_get(fxcache *fc, const void *key, size_t key_len)
     }
 
     if (fc->touch_fn) fc->touch_fn(&fc->base, n, fc->policy_ctx);
-
     return e ? e->user_value : NULL;
 }
 
@@ -475,6 +581,7 @@ fxcache_delete(fxcache *fc, const void *key, size_t key_len)
 {
     if (!fc || !key || key_len == 0) return -1;
     if (fc->key_mode == FLEXCACHE_KEY_OID && key_len != 12) return -1;
+    if (fc->key_mode == FLEXCACHE_KEY_INT64 && key_len != sizeof(int64_t)) return -1;
 
     bcache_node *n = bcache_get(&fc->base, key, (unsigned)key_len);
     if (!n) return -1;
@@ -510,6 +617,34 @@ fxcache_delete_oid(fxcache *fc, const bson_oid_t *oid)
     return fxcache_delete(fc, oid, 12);
 }
 
+
+/* Convenience API for INT64 mode */
+inline int
+fxcache_insert_int64(
+    fxcache *fc,
+    int64_t key,
+    const void *value,
+    size_t value_len,
+    int64_t byte_size,
+    uint64_t ttl_ms,
+    uint64_t expires_at_ms
+)
+{
+    return fxcache_insert(fc, &key, sizeof(key), value, value_len, byte_size, ttl_ms, expires_at_ms);
+}
+
+inline void *
+fxcache_get_int64(fxcache *fc, int64_t key)
+{
+    return fxcache_get(fc, &key, sizeof(key));
+}
+
+inline int
+fxcache_delete_int64(fxcache *fc, int64_t key)
+{
+    return fxcache_delete(fc, &key, sizeof(key));
+}
+
 void
 fxcache_scan_and_clean(fxcache *fc)
 {
@@ -519,130 +654,9 @@ fxcache_scan_and_clean(fxcache *fc)
     enforce_limits(fc);
 }
 
-void
-fxcache_maybe_scan_and_clean(fxcache *fc)
-{
-    if (!fc) return;
-    uint64_t now_ms = fc->now_fn(fc->user_ctx);
-
-    if (fc->scan_interval_ms == 0 ||
-        fc->last_scan_ms == 0 ||
-        (now_ms - fc->last_scan_ms) >= fc->scan_interval_ms) {
-        fc->last_scan_ms = now_ms;
-        remove_expired(fc, now_ms);
-        enforce_limits(fc);
-    }
-}
-
 size_t
 fxcache_item_count(const fxcache *fc)
 {
-    return fc ? fc->base.item_count : 0;
-}
-
-int64_t
-fxcache_total_bytes(const fxcache *fc)
-{
-    return fc ? fc->base.total_bytes : 0;
-}
-
-/* ============================================================
- *  FIFO policy
- * ============================================================ */
-static void
-fifo_touch(bcache *base, bcache_node *node, void *ctx)
-{
-    (void)base; (void)node; (void)ctx;
-}
-
-static bcache_node *
-fifo_pop(bcache *base, void *ctx)
-{
-    (void)ctx;
-    return base->list; /* oldest */
-}
-
-void
-fxcache_policy_fifo_init(fxcache *fc)
-{
-    if (!fc) return;
-    fxcache_set_policy_hooks(fc, fifo_touch, fifo_pop, NULL);
-}
-
-/* ============================================================
- *  LRU policy
- * ============================================================ */
-static void
-lru_touch(bcache *base, bcache_node *node, void *ctx)
-{
-    (void)ctx;
-    bcache_move_back(base, node);
-}
-
-static bcache_node *
-lru_pop(bcache *base, void *ctx)
-{
-    (void)ctx;
-    return base->list; /* LRU */
-}
-
-void
-fxcache_policy_lru_init(fxcache *fc)
-{
-    if (!fc) return;
-    fxcache_set_policy_hooks(fc, lru_touch, lru_pop, NULL);
-}
-
-/* ============================================================
- *  RANDOM policy
- * ============================================================ */
-struct fxcache_random_policy {
-    fxcache_rng_fn rng_fn;
-    void *rng_ctx;
-};
-
-static void
-random_touch(bcache *base, bcache_node *node, void *ctx)
-{
-    (void)base; (void)node; (void)ctx;
-}
-
-static bcache_node *
-random_pop(bcache *base, void *ctx)
-{
-    struct fxcache_random_policy *p = (struct fxcache_random_policy *)ctx;
-    if (!base || !p || base->item_count == 0) return NULL;
-
-    size_t idx = (size_t)(p->rng_fn(p->rng_ctx) % base->item_count);
-    bcache_node *n = base->list;
-    while (idx > 0 && n) {
-        n = n->next;
-        idx--;
-    }
-    return n;
-}
-
-fxcache_random_policy *
-fxcache_policy_random_create(fxcache_rng_fn rng_fn, void *rng_ctx)
-{
-    if (!rng_fn) return NULL;
-    struct fxcache_random_policy *p =
-        (struct fxcache_random_policy *)malloc(sizeof(*p));
-    if (!p) return NULL;
-    p->rng_fn = rng_fn;
-    p->rng_ctx = rng_ctx;
-    return p;
-}
-
-void
-fxcache_policy_random_destroy(fxcache_random_policy *policy)
-{
-    if (policy) free(policy);
-}
-
-void
-fxcache_policy_random_init(fxcache *fc, fxcache_random_policy *policy)
-{
-    if (!fc || !policy) return;
-    fxcache_set_policy_hooks(fc, random_touch, random_pop, policy);
+    if (!fc) return 0;
+    return fc->base.item_count;
 }
