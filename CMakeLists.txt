@@ -221,6 +221,8 @@ set(MONGOLITE_SOURCES
     ${SRC_DIR}/mongolite_db.c
     ${SRC_DIR}/mongolite_collection.c
     ${SRC_DIR}/mongolite_insert.c
+    ${SRC_DIR}/mongolite_find.c
+    ${SRC_DIR}/mongolite_cursor.c
     ${SRC_DIR}/key_compare.c
     ${LMDB_SOURCES}
 )
@@ -318,7 +320,25 @@ add_dependencies(test_mongolite_insert mongolite)
 target_link_libraries(test_mongolite_insert PRIVATE mongolite)
 add_test(NAME test_mongolite_insert COMMAND test_mongolite_insert)
 
-set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert
+# --- test para mongolite_find (Phase 4)
+
+add_executable(test_mongolite_find
+    ${TEST_DIR}/test_mongolite_find.c
+)
+add_dependencies(test_mongolite_find mongolite)
+target_link_libraries(test_mongolite_find PRIVATE mongolite)
+add_test(NAME test_mongolite_find COMMAND test_mongolite_find)
+
+# --- test para integration (full cycle)
+
+add_executable(test_mongolite_integration
+    ${TEST_DIR}/test_mongolite_integration.c
+)
+add_dependencies(test_mongolite_integration mongolite)
+target_link_libraries(test_mongolite_integration PRIVATE mongolite)
+add_test(NAME test_mongolite_integration COMMAND test_mongolite_integration)
+
+set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR}
 )
@@ -330,5 +350,5 @@ set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare te
 
 add_custom_target(run-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert
+    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration
 )
