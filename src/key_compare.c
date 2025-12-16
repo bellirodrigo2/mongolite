@@ -152,8 +152,10 @@ int mongodb_compare_iter(const bson_iter_t *a, const bson_iter_t *b);
 int bson_compare_docs(const bson_t *doc1, const bson_t *doc2) {
     bson_iter_t it1, it2;
 
-    bool ok1 = bson_iter_init(&it1, doc1);
-    bool ok2 = bson_iter_init(&it2, doc2);
+    // bool ok1 = bson_iter_init(&it1, doc1);
+    // bool ok2 = bson_iter_init(&it2, doc2);
+    bool ok1 = bson_iter_init(&it1, doc1) && bson_iter_next(&it1);
+    bool ok2 = bson_iter_init(&it2, doc2) && bson_iter_next(&it2);
 
     while (ok1 && ok2) {
         const char *k1 = bson_iter_key(&it1);
@@ -280,8 +282,8 @@ int mongodb_compare_iter(const bson_iter_t *a, const bson_iter_t *b) {
             return 0;
         }
 
-        case BSON_TYPE_DOCUMENT:
-        case BSON_TYPE_ARRAY: {
+        case BSON_TYPE_DOCUMENT:{
+        // case BSON_TYPE_ARRAY: {
             uint32_t len_a, len_b;
             const uint8_t *data_a, *data_b;
             bson_iter_document(a, &len_a, &data_a);
@@ -291,6 +293,21 @@ int mongodb_compare_iter(const bson_iter_t *a, const bson_iter_t *b) {
             bson_init_static(&A, data_a, len_a);
             bson_init_static(&B, data_b, len_b);
 
+            return bson_compare_docs(&A, &B);
+        }
+
+        case BSON_TYPE_ARRAY: {
+            uint32_t len_a, len_b;
+            const uint8_t *data_a, *data_b;
+            /* Para arrays, use bson_iter_array() (não bson_iter_document()). */
+            bson_iter_array(a, &len_a, &data_a);
+            bson_iter_array(b, &len_b, &data_b);
+            bson_t A, B;
+            bson_init_static(&A, data_a, len_a);
+            bson_init_static(&B, data_b, len_b);
+
+            /* bson_compare_docs funciona para arrays porque arrays são documentos
+             * com chaves "0","1","2"... em BSON. */
             return bson_compare_docs(&A, &B);
         }
 

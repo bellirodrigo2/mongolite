@@ -1077,6 +1077,112 @@ TEST(extract_compound_index_realistic) {
     return 0;
 }
 
+TEST(single_field_doc_equal_strict) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+
+    BSON_APPEND_INT32(a, "x", 1);
+    BSON_APPEND_INT32(b, "x", 1);
+
+    /* Deve ser exatamente igual */
+    TEST_ASSERT_EQUAL(0, bson_compare_docs(a, b));
+
+    bson_destroy(a);
+    bson_destroy(b);
+    return 0;
+}
+TEST(empty_vs_single_field) {
+    bson_t *empty = bson_new();
+    bson_t *nonempty = bson_new();
+
+    BSON_APPEND_INT32(nonempty, "x", 1);
+
+    /* Empty deve ser menor */
+    TEST_ASSERT_TRUE(bson_compare_docs(empty, nonempty) < 0);
+
+    bson_destroy(empty);
+    bson_destroy(nonempty);
+    return 0;
+}
+TEST(first_field_must_decide) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+
+    BSON_APPEND_INT32(a, "a", 1);
+    BSON_APPEND_INT32(a, "z", 100);
+
+    BSON_APPEND_INT32(b, "b", 0);
+    BSON_APPEND_INT32(b, "a", 1);
+
+    /* "a" < "b", então a < b */
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+
+    bson_destroy(a);
+    bson_destroy(b);
+    return 0;
+}
+
+TEST(array_simple_less) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    bson_t arr_a, arr_b;
+
+    bson_append_array_begin(a, "x", -1, &arr_a);
+    BSON_APPEND_INT32(&arr_a, "0", 1);
+    bson_append_array_end(a, &arr_a);
+
+    bson_append_array_begin(b, "x", -1, &arr_b);
+    BSON_APPEND_INT32(&arr_b, "0", 2);
+    bson_append_array_end(b, &arr_b);
+
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+
+    bson_destroy(a);
+    bson_destroy(b);
+    return 0;
+}
+TEST(array_length_matters) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    bson_t arr;
+
+    bson_append_array_begin(a, "x", -1, &arr);
+    BSON_APPEND_INT32(&arr, "0", 1);
+    bson_append_array_end(a, &arr);
+
+    bson_append_array_begin(b, "x", -1, &arr);
+    BSON_APPEND_INT32(&arr, "0", 1);
+    BSON_APPEND_INT32(&arr, "1", 2);
+    bson_append_array_end(b, &arr);
+
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+
+    bson_destroy(a);
+    bson_destroy(b);
+    return 0;
+}
+TEST(nested_array_compare) {
+    bson_t *a = bson_new();
+    bson_t *b = bson_new();
+    bson_t arr;
+
+    bson_append_array_begin(a, "arr", -1, &arr);
+    BSON_APPEND_UTF8(&arr, "0", "a");
+    bson_append_array_end(a, &arr);
+
+    bson_append_array_begin(b, "arr", -1, &arr);
+    BSON_APPEND_UTF8(&arr, "0", "b");
+    bson_append_array_end(b, &arr);
+
+    TEST_ASSERT_TRUE(bson_compare_docs(a, b) < 0);
+
+    bson_destroy(a);
+    bson_destroy(b);
+    return 0;
+}
+
+
+
 /* ============================================================
  * MAIN
  * ============================================================ */
@@ -1175,5 +1281,13 @@ TEST_SUITE_BEGIN("bson_compare tests")
     RUN_TEST(test_extract_nested_doc_field);
     RUN_TEST(test_extract_binary_field);
     RUN_TEST(test_extract_compound_index_realistic);
+
+    // bug fixes
+    RUN_TEST(test_single_field_doc_equal_strict);
+    RUN_TEST(test_empty_vs_single_field);
+    RUN_TEST(test_first_field_must_decide);
+    RUN_TEST(test_array_simple_less);
+    RUN_TEST(test_array_length_matters);
+    RUN_TEST(test_nested_array_compare);
 
 TEST_SUITE_END()
