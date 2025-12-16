@@ -13,65 +13,6 @@
 #define MONGOLITE_LIB "mongolite"
 
 /* ============================================================
- * Helper: Update document count in schema within an existing transaction
- *
- * This ensures doc_count is updated atomically with the delete
- * operation, preventing inconsistency on crash or failure.
- * ============================================================ */
-
-static int _update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
-                                  const char *collection, int64_t delta,
-                                  gerror_t *error) {
-    if (!db || !txn || !collection) {
-        return MONGOLITE_EINVAL;
-    }
-
-    /* Read schema entry using provided transaction */
-    const void *value;
-    size_t value_size;
-    int rc = wtree_get_txn(txn, db->schema_tree, collection, strlen(collection),
-                           &value, &value_size, error);
-    if (rc != 0) {
-        return rc;
-    }
-
-    /* Parse the schema entry */
-    bson_t doc;
-    if (!bson_init_static(&doc, value, value_size)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR, "Invalid BSON in schema");
-        return MONGOLITE_ERROR;
-    }
-
-    mongolite_schema_entry_t entry = {0};
-    rc = _mongolite_schema_entry_from_bson(&doc, &entry, error);
-    if (rc != 0) {
-        return rc;
-    }
-
-    /* Update count */
-    entry.doc_count += delta;
-    if (entry.doc_count < 0) entry.doc_count = 0;
-    entry.modified_at = _mongolite_now_ms();
-
-    /* Serialize and write back using provided transaction */
-    bson_t *new_doc = _mongolite_schema_entry_to_bson(&entry);
-    if (!new_doc) {
-        _mongolite_schema_entry_free(&entry);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to serialize schema entry");
-        return MONGOLITE_ENOMEM;
-    }
-
-    rc = wtree_update_txn(txn, db->schema_tree,
-                          entry.name, strlen(entry.name),
-                          bson_get_data(new_doc), new_doc->len, error);
-
-    bson_destroy(new_doc);
-    _mongolite_schema_entry_free(&entry);
-
-    return rc;
-}
-
-/* ============================================================
  * Delete one document
  * ============================================================ */
 
@@ -130,7 +71,7 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
 
     /* Update doc count within the same transaction for atomicity */
     if (deleted) {
-        rc = _update_doc_count_txn(db, txn, collection, -1, error);
+        rc = _mongolite_update_doc_count_txn(db, txn, collection, -1, error);
         if (rc != 0) {
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
@@ -189,8 +130,9 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Find all matching documents and collect their _ids */
-    mongolite_cursor_t *cursor = mongolite_find(db, collection, filter, NULL, error);
+    /* Create cursor using the existing transaction (avoids deadlock) */
+    mongolite_cursor_t *cursor = _mongolite_cursor_create_with_txn(db, tree, collection,
+                                                                    txn, filter, error);
     if (!cursor) {
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
@@ -263,7 +205,7 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
     /* Update doc count within the same transaction for atomicity */
     int rc = 0;
     if (count > 0) {
-        rc = _update_doc_count_txn(db, txn, collection, -count, error);
+        rc = _mongolite_update_doc_count_txn(db, txn, collection, -count, error);
         if (rc != 0) {
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);

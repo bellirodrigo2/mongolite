@@ -244,6 +244,77 @@ const char* mongolite_find_one_json(mongolite_db_t *db, const char *collection,
 }
 
 /* ============================================================
+ * Internal: Create cursor with existing transaction
+ *
+ * Used by delete_many/update_many to avoid deadlock.
+ * Caller must hold lock and provide valid tree/txn.
+ * ============================================================ */
+
+mongolite_cursor_t* _mongolite_cursor_create_with_txn(mongolite_db_t *db,
+                                                       wtree_tree_t *tree,
+                                                       const char *collection,
+                                                       wtree_txn_t *txn,
+                                                       const bson_t *filter,
+                                                       gerror_t *error) {
+    if (!db || !tree || !collection || !txn) {
+        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
+                 "Invalid parameters for cursor creation");
+        return NULL;
+    }
+
+    /* Create cursor */
+    mongolite_cursor_t *cursor = calloc(1, sizeof(mongolite_cursor_t));
+    if (!cursor) {
+        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
+                 "Failed to allocate cursor");
+        return NULL;
+    }
+
+    cursor->db = db;
+    cursor->collection_name = strdup(collection);
+
+    /* Use provided transaction - caller owns it */
+    cursor->txn = txn;
+    cursor->owns_txn = false;  /* Important: don't abort/commit this txn */
+
+    /* Create iterator using existing transaction */
+    cursor->iter = wtree_iterator_create_with_txn(tree, txn, error);
+    if (!cursor->iter) {
+        free(cursor->collection_name);
+        free(cursor);
+        return NULL;
+    }
+
+    /* Create matcher if we have a filter */
+    if (filter && !bson_empty(filter)) {
+        bson_error_t bson_err;
+        cursor->matcher = mongoc_matcher_new(filter, &bson_err);
+        if (!cursor->matcher) {
+            wtree_iterator_close(cursor->iter);
+            free(cursor->collection_name);
+            free(cursor);
+            set_error(error, MONGOLITE_LIB, MONGOLITE_EQUERY,
+                     "Invalid query: %s", bson_err.message);
+            return NULL;
+        }
+    }
+
+    /* Initialize position */
+    cursor->projection = NULL;
+    cursor->sort = NULL;
+    cursor->limit = 0;
+    cursor->skip = 0;
+    cursor->position = 0;
+    cursor->returned = 0;
+    cursor->exhausted = false;
+    cursor->current_doc = NULL;
+    cursor->sort_buffer = NULL;
+    cursor->sort_buffer_size = 0;
+
+    return cursor;
+}
+
+/* ============================================================
  * Find (returns cursor)
  * ============================================================ */
 

@@ -18,18 +18,6 @@
 #include <windows.h>
 #include <direct.h>
 #define rmdir _rmdir
-/* strndup not available on Windows */
-static char* strndup_local(const char *s, size_t n) {
-    size_t len = strlen(s);
-    if (len > n) len = n;
-    char *result = malloc(len + 1);
-    if (result) {
-        memcpy(result, s, len);
-        result[len] = '\0';
-    }
-    return result;
-}
-#define strndup strndup_local
 #else
 #include <unistd.h>
 #include <dirent.h>

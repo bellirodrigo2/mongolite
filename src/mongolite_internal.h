@@ -226,14 +226,24 @@ int64_t _mongolite_now_ms(void);
 int64_t _mongolite_oid_to_rowid(const bson_oid_t *oid);
 
 /* Lock helpers */
+int _mongolite_lock_init(mongolite_db_t *db);
+void _mongolite_lock_free(mongolite_db_t *db);
 void _mongolite_lock(mongolite_db_t *db);
 void _mongolite_unlock(mongolite_db_t *db);
+
+/* Platform helpers */
+char* _mongolite_strndup(const char *s, size_t n);
 
 /* Transaction helpers */
 wtree_txn_t* _mongolite_get_write_txn(mongolite_db_t *db, gerror_t *error);
 wtree_txn_t* _mongolite_get_read_txn(mongolite_db_t *db, gerror_t *error);
 int _mongolite_commit_if_auto(mongolite_db_t *db, wtree_txn_t *txn, gerror_t *error);
 void _mongolite_abort_if_auto(mongolite_db_t *db, wtree_txn_t *txn);
+
+/* Doc count update (within existing transaction) */
+int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
+                                     const char *collection, int64_t delta,
+                                     gerror_t *error);
 
 /* ============================================================
  * Internal Collection Operations
@@ -242,6 +252,23 @@ void _mongolite_abort_if_auto(mongolite_db_t *db, wtree_txn_t *txn);
 /* Get or open a collection's tree handle (uses cache) */
 wtree_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *name,
                                               gerror_t *error);
+
+/* ============================================================
+ * Internal Cursor Operations
+ * ============================================================ */
+
+/*
+ * Create a cursor using an existing transaction.
+ * IMPORTANT: Caller must already hold _mongolite_lock(db).
+ *            Caller is responsible for the transaction lifecycle.
+ *            The cursor will NOT own the transaction (owns_txn = false).
+ */
+mongolite_cursor_t* _mongolite_cursor_create_with_txn(mongolite_db_t *db,
+                                                       wtree_tree_t *tree,
+                                                       const char *collection,
+                                                       wtree_txn_t *txn,
+                                                       const bson_t *filter,
+                                                       gerror_t *error);
 
 #ifdef __cplusplus
 }

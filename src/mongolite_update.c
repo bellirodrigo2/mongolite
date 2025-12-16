@@ -50,11 +50,9 @@ static int _apply_set(bson_t *doc, bson_iter_t *set_iter, gerror_t *error) {
             return -1;
         }
 
-        /* Replace original document */
-        uint32_t len = tmp.len;
-        uint8_t *data = bson_destroy_with_steal(&tmp, true, &len);
-        bson_init_static(doc, data, len);
-        bson_free(data);
+        /* Replace original document - transfer ownership properly */
+        bson_destroy(doc);      /* Destroy old doc */
+        bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
     }
 
     return 0;
@@ -112,11 +110,9 @@ static int _apply_unset(bson_t *doc, bson_iter_t *unset_iter, gerror_t *error) {
 
     free(fields);
 
-    /* Replace original document */
-    uint32_t len = tmp.len;
-    uint8_t *data = bson_destroy_with_steal(&tmp, true, &len);
-    bson_init_static(doc, data, len);
-    bson_free(data);
+    /* Replace original document - transfer ownership properly */
+    bson_destroy(doc);      /* Destroy old doc */
+    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
 
     return 0;
 }
@@ -205,11 +201,9 @@ static int _apply_inc(bson_t *doc, bson_iter_t *inc_iter, gerror_t *error) {
         }
     }
 
-    /* Replace original document */
-    uint32_t len = tmp.len;
-    uint8_t *data = bson_destroy_with_steal(&tmp, true, &len);
-    bson_init_static(doc, data, len);
-    bson_free(data);
+    /* Replace original document - transfer ownership properly */
+    bson_destroy(doc);      /* Destroy old doc */
+    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
 
     return 0;
 }
@@ -276,11 +270,9 @@ static int _apply_push(bson_t *doc, bson_iter_t *push_iter, gerror_t *error) {
         tmp = tmp2;
     }
 
-    /* Replace original document */
-    uint32_t len = tmp.len;
-    uint8_t *data = bson_destroy_with_steal(&tmp, true, &len);
-    bson_init_static(doc, data, len);
-    bson_free(data);
+    /* Replace original document - transfer ownership properly */
+    bson_destroy(doc);      /* Destroy old doc */
+    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
 
     return 0;
 }
@@ -345,11 +337,9 @@ static int _apply_pull(bson_t *doc, bson_iter_t *pull_iter, gerror_t *error) {
         }
     }
 
-    /* Replace original document */
-    uint32_t len = tmp.len;
-    uint8_t *data = bson_destroy_with_steal(&tmp, true, &len);
-    bson_init_static(doc, data, len);
-    bson_free(data);
+    /* Replace original document - transfer ownership properly */
+    bson_destroy(doc);      /* Destroy old doc */
+    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
 
     return 0;
 }
@@ -396,11 +386,9 @@ static int _apply_rename(bson_t *doc, bson_iter_t *rename_iter, gerror_t *error)
         }
     }
 
-    /* Replace original document */
-    uint32_t len = tmp.len;
-    uint8_t *data = bson_destroy_with_steal(&tmp, true, &len);
-    bson_init_static(doc, data, len);
-    bson_free(data);
+    /* Replace original document - transfer ownership properly */
+    bson_destroy(doc);      /* Destroy old doc */
+    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
 
     return 0;
 }
@@ -582,8 +570,9 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Find all matching documents */
-    mongolite_cursor_t *cursor = mongolite_find(db, collection, filter, NULL, error);
+    /* Create cursor using existing transaction (avoids deadlock) */
+    mongolite_cursor_t *cursor = _mongolite_cursor_create_with_txn(db, tree, collection,
+                                                                    txn, filter, error);
     if (!cursor) {
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);

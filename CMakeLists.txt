@@ -219,6 +219,9 @@ set(MONGOLITE_SOURCES
     ${SRC_DIR}/gerror.c
     ${SRC_DIR}/wtree.c
     ${SRC_DIR}/mongolite_db.c
+    ${SRC_DIR}/mongolite_util.c
+    ${SRC_DIR}/mongolite_schema.c
+    ${SRC_DIR}/mongolite_txn.c
     ${SRC_DIR}/mongolite_collection.c
     ${SRC_DIR}/mongolite_insert.c
     ${SRC_DIR}/mongolite_find.c
