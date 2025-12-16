@@ -43,7 +43,7 @@ int mongolite_collection_create(mongolite_db_t *db, const char *name,
     char *tree_name = _mongolite_collection_tree_name(name);
     if (!tree_name) {
         _mongolite_unlock(db);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
+        set_error(error, "system", MONGOLITE_ENOMEM,
                  "Failed to allocate tree name");
         return MONGOLITE_ENOMEM;
     }

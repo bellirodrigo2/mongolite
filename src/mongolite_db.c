@@ -191,7 +191,7 @@ int mongolite_db_set_metadata(mongolite_db_t *db, const bson_t *metadata, gerror
         db->db_metadata = bson_copy(metadata);
         if (!db->db_metadata) {
             _mongolite_unlock(db);
-            set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to copy metadata");
+            set_error(error, "libbson", MONGOLITE_ENOMEM, "Failed to copy bson metadata");
             return MONGOLITE_ENOMEM;
         }
     }

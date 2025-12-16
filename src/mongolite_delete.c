@@ -149,7 +149,7 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         mongolite_cursor_destroy(cursor);
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Out of memory");
+        set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
         return -1;
     }
 
@@ -170,7 +170,7 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
                 mongolite_cursor_destroy(cursor);
                 _mongolite_abort_if_auto(db, txn);
                 _mongolite_unlock(db);
-                set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Out of memory");
+                set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
                 return -1;
             }
             ids = new_ids;

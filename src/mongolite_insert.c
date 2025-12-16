@@ -80,7 +80,9 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
         _mongolite_unlock(db);
-        return MONGOLITE_ENOTFOUND;
+        /* Error already set by _mongolite_get_collection_tree */
+        /* Return generic error - check gerror for details */
+        return MONGOLITE_ERROR;
     }
 
     /* Ensure document has _id */
@@ -89,7 +91,7 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
     bson_t *final_doc = _ensure_id(doc, &oid, &id_generated);
     if (!final_doc) {
         _mongolite_unlock(db);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
+        set_error(error, "system", MONGOLITE_ENOMEM,
                  "Failed to prepare document");
         return MONGOLITE_ENOMEM;
     }
@@ -166,7 +168,9 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
         _mongolite_unlock(db);
-        return MONGOLITE_ENOTFOUND;
+        /* Error already set by _mongolite_get_collection_tree */
+        /* Return generic error - check gerror for details */
+        return MONGOLITE_ERROR;
     }
 
     /* Allocate array for OIDs if requested */
@@ -175,7 +179,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
         oids = calloc(n_docs, sizeof(bson_oid_t));
         if (!oids) {
             _mongolite_unlock(db);
-            set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
+            set_error(error, "system", MONGOLITE_ENOMEM,
                      "Failed to allocate OID array");
             return MONGOLITE_ENOMEM;
         }
@@ -195,7 +199,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
         _mongolite_abort_if_auto(db, txn);
         free(oids);
         _mongolite_unlock(db);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
+        set_error(error, "system", MONGOLITE_ENOMEM,
                  "Failed to allocate tracking array");
         return MONGOLITE_ENOMEM;
     }
@@ -212,7 +216,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 
         if (!final_doc) {
             rc = MONGOLITE_ENOMEM;
-            set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
+            set_error(error, "system", MONGOLITE_ENOMEM,
                      "Failed to prepare document %zu", i);
             break;
         }
@@ -299,7 +303,7 @@ int mongolite_insert_one_json(mongolite_db_t *db, const char *collection,
     bson_error_t bson_err;
     bson_t *doc = bson_new_from_json((const uint8_t*)json_str, -1, &bson_err);
     if (!doc) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
+        set_error(error, "libbson", MONGOLITE_EINVAL,
                  "Invalid JSON: %s", bson_err.message);
         return MONGOLITE_EINVAL;
     }
@@ -326,7 +330,7 @@ int mongolite_insert_many_json(mongolite_db_t *db, const char *collection,
     /* Parse all JSON strings */
     bson_t **docs = calloc(n_docs, sizeof(bson_t*));
     if (!docs) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
+        set_error(error, "system", MONGOLITE_ENOMEM,
                  "Failed to allocate document array");
         return MONGOLITE_ENOMEM;
     }
@@ -339,7 +343,7 @@ int mongolite_insert_many_json(mongolite_db_t *db, const char *collection,
 
         docs[i] = bson_new_from_json((const uint8_t*)json_strs[i], -1, &bson_err);
         if (!docs[i]) {
-            set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
+            set_error(error, "libbson", MONGOLITE_EINVAL,
                      "Invalid JSON at index %zu: %s", i, bson_err.message);
             rc = MONGOLITE_EINVAL;
             break;

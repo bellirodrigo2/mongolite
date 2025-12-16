@@ -68,6 +68,7 @@ int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
                                      const char *collection, int64_t delta,
                                      gerror_t *error) {
     if (!db || !txn || !collection) {
+        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
         return MONGOLITE_EINVAL;
     }
 
@@ -102,7 +103,7 @@ int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
     bson_t *new_doc = _mongolite_schema_entry_to_bson(&entry);
     if (!new_doc) {
         _mongolite_schema_entry_free(&entry);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to serialize schema entry");
+        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to serialize schema entry");
         return MONGOLITE_ENOMEM;
     }
 
@@ -127,13 +128,15 @@ int mongolite_begin_transaction(mongolite_db_t *db) {
 
     if (db->in_transaction) {
         _mongolite_unlock(db);
+        /* Note: No gerror parameter in this function, so can't set error */
         return MONGOLITE_ERROR;  /* Already in transaction */
     }
 
-    gerror_t error = {0};
-    db->current_txn = wtree_txn_begin(db->wdb, true, &error);
+    gerror_t local_error = {0};
+    db->current_txn = wtree_txn_begin(db->wdb, true, &local_error);
     if (!db->current_txn) {
         _mongolite_unlock(db);
+        /* Note: error was set in local_error but we can't return it (no gerror param) */
         return MONGOLITE_ERROR;
     }
 
@@ -149,11 +152,12 @@ int mongolite_commit(mongolite_db_t *db) {
 
     if (!db->in_transaction || !db->current_txn) {
         _mongolite_unlock(db);
+        /* Note: No gerror parameter in this function, so can't set error */
         return MONGOLITE_ERROR;  /* Not in transaction */
     }
 
-    gerror_t error = {0};
-    int rc = wtree_txn_commit(db->current_txn, &error);
+    gerror_t local_error = {0};
+    int rc = wtree_txn_commit(db->current_txn, &local_error);
 
     db->current_txn = NULL;
     db->in_transaction = false;
@@ -169,6 +173,7 @@ int mongolite_rollback(mongolite_db_t *db) {
 
     if (!db->in_transaction || !db->current_txn) {
         _mongolite_unlock(db);
+        /* Note: No gerror parameter in this function, so can't set error */
         return MONGOLITE_ERROR;  /* Not in transaction */
     }
 

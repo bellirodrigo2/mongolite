@@ -78,7 +78,7 @@ static int _apply_unset(bson_t *doc, bson_iter_t *unset_iter, gerror_t *error) {
         const char *field_name = bson_iter_key(&field_iter);
         fields = realloc(fields, sizeof(char*) * (n_fields + 1));
         if (!fields) {
-            set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Out of memory");
+            set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
             return -1;
         }
         fields[n_fields++] = (char*)field_name;
@@ -400,7 +400,7 @@ static int _apply_rename(bson_t *doc, bson_iter_t *rename_iter, gerror_t *error)
 static bson_t* _apply_update(const bson_t *original, const bson_t *update, gerror_t *error) {
     bson_t *doc = bson_copy(original);
     if (!doc) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to copy document");
+        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to copy document");
         return NULL;
     }
 
@@ -757,14 +757,14 @@ int mongolite_update_one_json(mongolite_db_t *db, const char *collection,
 
     bson_t *filter = filter_json ? bson_new_from_json((const uint8_t*)filter_json, -1, &bson_err) : NULL;
     if (filter_json && !filter) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid filter JSON: %s", bson_err.message);
+        set_error(error, "libbson", MONGOLITE_EINVAL, "Invalid filter JSON: %s", bson_err.message);
         return -1;
     }
 
     bson_t *update = bson_new_from_json((const uint8_t*)update_json, -1, &bson_err);
     if (!update) {
         if (filter) bson_destroy(filter);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid update JSON: %s", bson_err.message);
+        set_error(error, "libbson", MONGOLITE_EINVAL, "Invalid update JSON: %s", bson_err.message);
         return -1;
     }
 
@@ -782,14 +782,14 @@ int mongolite_update_many_json(mongolite_db_t *db, const char *collection,
 
     bson_t *filter = filter_json ? bson_new_from_json((const uint8_t*)filter_json, -1, &bson_err) : NULL;
     if (filter_json && !filter) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid filter JSON: %s", bson_err.message);
+        set_error(error, "libbson", MONGOLITE_EINVAL, "Invalid filter JSON: %s", bson_err.message);
         return -1;
     }
 
     bson_t *update = bson_new_from_json((const uint8_t*)update_json, -1, &bson_err);
     if (!update) {
         if (filter) bson_destroy(filter);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid update JSON: %s", bson_err.message);
+        set_error(error, "libbson", MONGOLITE_EINVAL, "Invalid update JSON: %s", bson_err.message);
         return -1;
     }
 
@@ -807,14 +807,14 @@ int mongolite_replace_one_json(mongolite_db_t *db, const char *collection,
 
     bson_t *filter = filter_json ? bson_new_from_json((const uint8_t*)filter_json, -1, &bson_err) : NULL;
     if (filter_json && !filter) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid filter JSON: %s", bson_err.message);
+        set_error(error, "libbson", MONGOLITE_EINVAL, "Invalid filter JSON: %s", bson_err.message);
         return -1;
     }
 
     bson_t *replacement = bson_new_from_json((const uint8_t*)replacement_json, -1, &bson_err);
     if (!replacement) {
         if (filter) bson_destroy(filter);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid replacement JSON: %s", bson_err.message);
+        set_error(error, "libbson", MONGOLITE_EINVAL, "Invalid replacement JSON: %s", bson_err.message);
         return -1;
     }
 

@@ -248,7 +248,7 @@ int _mongolite_schema_put(mongolite_db_t *db, const mongolite_schema_entry_t *en
 
     bson_t *doc = _mongolite_schema_entry_to_bson(entry);
     if (!doc) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to create BSON document");
+        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to create BSON document");
         return MONGOLITE_ENOMEM;
     }
 
@@ -356,7 +356,7 @@ int _mongolite_schema_list(mongolite_db_t *db, char ***names, size_t *count,
     if (!*names) {
         wtree_iterator_close(iter);
         _mongolite_abort_if_auto(db, txn);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate names array");
+        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to allocate names array");
         return MONGOLITE_ENOMEM;
     }
 
