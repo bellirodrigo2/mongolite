@@ -26,17 +26,18 @@ int mongolite_collection_create(mongolite_db_t *db, const char *name,
         return MONGOLITE_EINVAL;
     }
 
-    /* Check if collection already exists */
+    _mongolite_lock(db);
+
+    /* Check if collection already exists (inside lock to avoid race condition) */
     mongolite_schema_entry_t existing = {0};
     int rc = _mongolite_schema_get(db, name, &existing, NULL);
     if (rc == 0) {
         _mongolite_schema_entry_free(&existing);
+        _mongolite_unlock(db);
         set_error(error, MONGOLITE_LIB, MONGOLITE_EEXISTS,
                  "Collection already exists: %s", name);
         return MONGOLITE_EEXISTS;
     }
-
-    _mongolite_lock(db);
 
     /* Build tree name: col:<collection_name> */
     char *tree_name = _mongolite_collection_tree_name(name);
@@ -96,7 +97,9 @@ int mongolite_collection_create(mongolite_db_t *db, const char *name,
     /* Store schema entry */
     rc = _mongolite_schema_put(db, &entry, error);
     if (rc != 0) {
+        /* Delete the tree to avoid orphaned DBI - close handle first, then delete */
         wtree_tree_close(tree);
+        wtree_tree_delete(db->wdb, entry.tree_name, NULL);
         _mongolite_schema_entry_free(&entry);
         _mongolite_unlock(db);
         return rc;

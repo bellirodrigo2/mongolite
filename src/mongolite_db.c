@@ -112,9 +112,10 @@ char* _mongolite_index_tree_name(const char *collection_name, const char *index_
     size_t col_len = strlen(collection_name);
     size_t idx_len = strlen(index_name);
     /* Format: idx:collection:index_name */
-    char *tree_name = malloc(prefix_len + col_len + 1 + idx_len + 1);
+    size_t total_len = prefix_len + col_len + 1 + idx_len + 1;
+    char *tree_name = malloc(total_len);
     if (!tree_name) return NULL;
-    sprintf(tree_name, "%s%s:%s", MONGOLITE_IDX_PREFIX, collection_name, index_name);
+    snprintf(tree_name, total_len, "%s%s:%s", MONGOLITE_IDX_PREFIX, collection_name, index_name);
     return tree_name;
 }
 
