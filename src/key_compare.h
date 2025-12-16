@@ -10,6 +10,10 @@ extern "C" {
 // Compara dois documentos BSON inteiros (ordem MongoDB)
 int bson_compare_docs(const bson_t *doc1, const bson_t *doc2);
 
+// Compara valores BSON de dois iteradores (ordem MongoDB)
+// Retorna: -1 se a < b, 0 se a == b, 1 se a > b
+int mongodb_compare_iter(const bson_iter_t *a, const bson_iter_t *b);
+
 // Extrai campos de um documento para criar uma index key
 // doc: documento fonte
 // keys: especificação do índice, ex: {"name": 1, "age": -1}

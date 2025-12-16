@@ -320,7 +320,7 @@ int mongodb_compare_iter(const bson_iter_t *a, const bson_iter_t *b) {
  * 7) HELPER: APPEND DE VALOR DO ITERADOR PARA DOCUMENTO
  * ============================================================ */
 
-static bool bson_append_iter_value(bson_t *dest, const char *key, const bson_iter_t *iter) {
+static bool bson_append_iter_value(bson_t *dest, const char *key, bson_iter_t *iter) {
     const bson_value_t *value = bson_iter_value(iter);
     return bson_append_value(dest, key, -1, value);
 }

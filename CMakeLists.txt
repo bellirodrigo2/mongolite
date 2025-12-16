@@ -223,6 +223,8 @@ set(MONGOLITE_SOURCES
     ${SRC_DIR}/mongolite_insert.c
     ${SRC_DIR}/mongolite_find.c
     ${SRC_DIR}/mongolite_cursor.c
+    ${SRC_DIR}/mongolite_update.c
+    ${SRC_DIR}/mongolite_delete.c
     ${SRC_DIR}/key_compare.c
     ${LMDB_SOURCES}
 )
@@ -338,7 +340,25 @@ add_dependencies(test_mongolite_integration mongolite)
 target_link_libraries(test_mongolite_integration PRIVATE mongolite)
 add_test(NAME test_mongolite_integration COMMAND test_mongolite_integration)
 
-set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration
+# --- test para mongolite_update (Phase 6)
+
+add_executable(test_mongolite_update
+    ${TEST_DIR}/test_mongolite_update.c
+)
+add_dependencies(test_mongolite_update mongolite)
+target_link_libraries(test_mongolite_update PRIVATE mongolite)
+add_test(NAME test_mongolite_update COMMAND test_mongolite_update)
+
+# --- test para mongolite_delete (Phase 7)
+
+add_executable(test_mongolite_delete
+    ${TEST_DIR}/test_mongolite_delete.c
+)
+add_dependencies(test_mongolite_delete mongolite)
+target_link_libraries(test_mongolite_delete PRIVATE mongolite)
+add_test(NAME test_mongolite_delete COMMAND test_mongolite_delete)
+
+set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR}
 )
@@ -350,5 +370,5 @@ set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare te
 
 add_custom_target(run-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration
+    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete
 )
