@@ -59,13 +59,15 @@ public:
     std::vector<bson_oid_t> known_ids;
     std::vector<int64_t> known_ref_ids;
 
+    static size_t instance_counter;
     static constexpr size_t COLLECTION_SIZE = 10000;
 
     void SetUp(const benchmark::State& state) override {
         (void)state;
         memset(&error, 0, sizeof(error));
 
-        db_path = "./bench_update_db_" + std::to_string(rand());
+        // Use unique counter instead of rand() to avoid collisions
+        db_path = "./bench_update_db_" + std::to_string(++instance_counter);
         remove_directory(db_path.c_str());
 
         db_config_t config = {0};
@@ -125,9 +127,15 @@ public:
             mongolite_close(db);
             db = nullptr;
         }
+#ifdef _WIN32
+        Sleep(100);  // Give Windows time to release file handles
+#endif
         remove_directory(db_path.c_str());
     }
 };
+
+// Static counter initialization
+size_t UpdateFixture::instance_counter = 0;
 
 // ============================================================
 // Benchmark: Update One with $set (by _id)

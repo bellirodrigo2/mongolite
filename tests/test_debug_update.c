@@ -203,7 +203,40 @@ int main(void) {
         printf("   Iteration %d OK\n", i);
     }
 
-    printf("\n10. Closing database...\n");
+    printf("\n10. Stress test: 2000 iterations of $set + $inc...\n");
+    for (int i = 0; i < 2000; i++) {
+        bson_t *filter = bson_new();
+        BSON_APPEND_OID(filter, "_id", &id);
+
+        bson_t *update = bson_new();
+
+        bson_t set_doc;
+        BSON_APPEND_DOCUMENT_BEGIN(update, "$set", &set_doc);
+        BSON_APPEND_BOOL(&set_doc, "active", (i % 2) == 0);
+        BSON_APPEND_UTF8(&set_doc, "department", "stress");
+        bson_append_document_end(update, &set_doc);
+
+        bson_t inc_doc;
+        BSON_APPEND_DOCUMENT_BEGIN(update, "$inc", &inc_doc);
+        BSON_APPEND_INT32(&inc_doc, "age", 1);
+        BSON_APPEND_DOUBLE(&inc_doc, "score", 0.5);
+        bson_append_document_end(update, &inc_doc);
+
+        rc = mongolite_update_one(db, "test", filter, update, false, &error);
+        bson_destroy(filter);
+        bson_destroy(update);
+
+        if (rc < 0) {
+            printf("   FAILED at iteration %d: %s\n", i, error.message);
+            break;
+        }
+        if (i % 500 == 0) {
+            printf("   Iteration %d OK\n", i);
+        }
+    }
+    printf("   Stress test complete\n");
+
+    printf("\n11. Closing database...\n");
     mongolite_close(db);
     cleanup();
 

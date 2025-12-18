@@ -27,9 +27,8 @@
  * Platform-specific helpers
  * ============================================================ */
 
-#ifdef _WIN32
-/* strndup not available on Windows */
 char* _mongolite_strndup(const char *s, size_t n) {
+#ifdef _WIN32
     size_t len = strlen(s);
     if (len > n) len = n;
     char *result = malloc(len + 1);
@@ -38,10 +37,10 @@ char* _mongolite_strndup(const char *s, size_t n) {
         result[len] = '\0';
     }
     return result;
-}
 #else
-#define _mongolite_strndup strndup
+    return strndup(s, n);
 #endif
+}
 
 /* ============================================================
  * Timestamp Helpers

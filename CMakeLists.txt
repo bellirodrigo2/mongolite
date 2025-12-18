@@ -295,7 +295,7 @@ add_executable(test_bsonmatch
     ${TEST_DIR}/test_bsonmatch.c
 )
 add_dependencies(test_bsonmatch bsonmatch)
-target_link_libraries(test_bsonmatch PRIVATE bsonmatch)
+target_link_libraries(test_bsonmatch PRIVATE bsonmatch m)
 add_test(NAME test_bsonmatch COMMAND test_bsonmatch)
 
 # --- test para mongolite_db (Phase 1)

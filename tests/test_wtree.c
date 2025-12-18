@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
 
 #ifdef _WIN32
     #include <direct.h>
