@@ -249,45 +249,6 @@ target_link_libraries(mongolite PUBLIC
 )
 
 # ============================================================
-# ========================= CMOCKA (Hybrid: submodule or FetchContent) ====
-# ============================================================
-
-option(MONGOLITE_BUILD_TESTS "Build unit tests with CMocka" ON)
-
-if(MONGOLITE_BUILD_TESTS)
-    # Try submodule first, fallback to FetchContent
-    if(EXISTS "${CMAKE_SOURCE_DIR}/external/cmocka/CMakeLists.txt")
-        message(STATUS "Using CMocka from git submodule")
-
-        # Configure CMocka options
-        set(WITH_STATIC_LIB ON CACHE BOOL "" FORCE)
-        set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
-        set(WITH_CMOCKERY_SUPPORT OFF CACHE BOOL "" FORCE)
-        set(UNIT_TESTING OFF CACHE BOOL "" FORCE)
-
-        add_subdirectory(external/cmocka)
-    else()
-        message(STATUS "CMocka submodule not found, using FetchContent")
-        include(FetchContent)
-
-        FetchContent_Declare(
-            cmocka
-            GIT_REPOSITORY https://git.cryptomilk.org/projects/cmocka.git
-            GIT_TAG        cmocka-1.1.7
-            GIT_SHALLOW    TRUE
-        )
-
-        # Configure CMocka options
-        set(WITH_STATIC_LIB ON CACHE BOOL "" FORCE)
-        set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
-        set(WITH_CMOCKERY_SUPPORT OFF CACHE BOOL "" FORCE)
-        set(UNIT_TESTING OFF CACHE BOOL "" FORCE)
-
-        FetchContent_MakeAvailable(cmocka)
-    endif()
-endif()
-
-# ============================================================
 # ========================= TESTS ============================
 # ============================================================
 
@@ -300,76 +261,6 @@ add_executable(test_gerror
     ${SRC_DIR}/gerror.c
 )
 add_test(NAME test_gerror COMMAND test_gerror)
-
-# --- test para gerror (CMocka version)
-
-if(MONGOLITE_BUILD_TESTS)
-    add_executable(test_gerror_cmocka
-        ${TEST_DIR}/test_gerror_cmocka.c
-        ${SRC_DIR}/gerror.c
-    )
-    target_link_libraries(test_gerror_cmocka PRIVATE cmocka)
-    target_include_directories(test_gerror_cmocka PRIVATE
-        ${SRC_DIR}
-        ${CMAKE_BINARY_DIR}/_deps/cmocka-src/include
-        ${CMAKE_BINARY_DIR}/_deps/cmocka-build/include
-    )
-    add_test(NAME test_gerror_cmocka COMMAND test_gerror_cmocka)
-
-    # --- test para key_compare (CMocka version)
-    add_executable(test_key_compare_cmocka
-        ${TEST_DIR}/test_key_compare_cmocka.c
-        ${SRC_DIR}/key_compare.c
-    )
-    add_dependencies(test_key_compare_cmocka libbson)
-    target_link_libraries(test_key_compare_cmocka PRIVATE
-        cmocka
-        ${LOCAL_LIBBSON_LIB}
-        ${SYSTEM_NETWORK_LIBS}
-    )
-    target_include_directories(test_key_compare_cmocka PRIVATE
-        ${SRC_DIR}
-        ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
-        ${CMAKE_BINARY_DIR}/_deps/cmocka-src/include
-        ${CMAKE_BINARY_DIR}/_deps/cmocka-build/include
-    )
-    add_test(NAME test_key_compare_cmocka COMMAND test_key_compare_cmocka)
-
-    # --- test para bsonmatch (CMocka version)
-    add_executable(test_bsonmatch_cmocka
-        ${TEST_DIR}/test_bsonmatch_cmocka.c
-    )
-    add_dependencies(test_bsonmatch_cmocka bsonmatch)
-    target_link_libraries(test_bsonmatch_cmocka PRIVATE
-        cmocka
-        bsonmatch
-    )
-    target_include_directories(test_bsonmatch_cmocka PRIVATE
-        ${SRC_DIR}
-        ${BSONMATCH_DIR}/src
-        ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
-        ${CMAKE_BINARY_DIR}/_deps/cmocka-src/include
-        ${CMAKE_BINARY_DIR}/_deps/cmocka-build/include
-    )
-    add_test(NAME test_bsonmatch_cmocka COMMAND test_bsonmatch_cmocka)
-
-    # --- test para mongolite_db (CMocka version)
-    add_executable(test_mongolite_db_cmocka
-        ${TEST_DIR}/test_mongolite_db_cmocka.c
-    )
-    add_dependencies(test_mongolite_db_cmocka mongolite)
-    target_link_libraries(test_mongolite_db_cmocka PRIVATE
-        cmocka
-        mongolite
-    )
-    target_include_directories(test_mongolite_db_cmocka PRIVATE
-        ${SRC_DIR}
-        ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
-        ${CMAKE_BINARY_DIR}/_deps/cmocka-src/include
-        ${CMAKE_BINARY_DIR}/_deps/cmocka-build/include
-    )
-    add_test(NAME test_mongolite_db_cmocka COMMAND test_mongolite_db_cmocka)
-endif()
 
 # --- test para wtree (uses WTREE_SOURCES directly)
 
@@ -470,11 +361,19 @@ add_dependencies(test_mongolite_delete mongolite)
 target_link_libraries(test_mongolite_delete PRIVATE mongolite)
 add_test(NAME test_mongolite_delete COMMAND test_mongolite_delete)
 
-set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete test_gerror_cmocka test_key_compare_cmocka test_bsonmatch_cmocka test_mongolite_db_cmocka
-    PROPERTIES
+    set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete
+        PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR}
 )
 
+
+# --- debug test for update
+add_executable(test_debug_update
+    ${TEST_DIR}/test_debug_update.c
+)
+add_dependencies(test_debug_update mongolite)
+target_link_libraries(test_debug_update PRIVATE mongolite)
+set_target_properties(test_debug_update PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
 
 # =========================
 # Target: make test
@@ -482,5 +381,36 @@ set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare te
 
 add_custom_target(run-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete test_gerror_cmocka test_key_compare_cmocka test_bsonmatch_cmocka test_mongolite_db_cmocka
+    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete
 )
+
+# ============================================================
+# ========================= BENCHMARKS ========================
+# ============================================================
+
+option(BUILD_BENCHMARKS "Build benchmarks" ON)
+
+if(BUILD_BENCHMARKS)
+    # Enable C++ for benchmarks (Google Benchmark is C++)
+    enable_language(CXX)
+    set(CMAKE_CXX_STANDARD 17)
+    set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+    include(FetchContent)
+
+    FetchContent_Declare(
+        googlebenchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG        v1.8.3
+    )
+
+    # Disable benchmark tests to speed up build
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
+
+    FetchContent_MakeAvailable(googlebenchmark)
+
+    add_subdirectory(benchmarks)
+endif()

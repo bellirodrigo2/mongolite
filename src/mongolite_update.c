@@ -50,9 +50,9 @@ static int _apply_set(bson_t *doc, bson_iter_t *set_iter, gerror_t *error) {
             return -1;
         }
 
-        /* Replace original document - transfer ownership properly */
-        bson_destroy(doc);      /* Destroy old doc */
-        bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
+        /* Replace original document */
+        bson_destroy(doc);
+        *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
     }
 
     return 0;
@@ -110,9 +110,9 @@ static int _apply_unset(bson_t *doc, bson_iter_t *unset_iter, gerror_t *error) {
 
     free(fields);
 
-    /* Replace original document - transfer ownership properly */
-    bson_destroy(doc);      /* Destroy old doc */
-    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
+    /* Replace original document */
+    bson_destroy(doc);
+    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
 
     return 0;
 }
@@ -133,7 +133,7 @@ static int _apply_inc(bson_t *doc, bson_iter_t *inc_iter, gerror_t *error) {
     bson_init(&tmp);
 
     /* Copy existing document */
-    bson_copy_to(&tmp, doc);
+    bson_copy_to(doc, &tmp);
 
     while (bson_iter_next(&field_iter)) {
         const char *field_name = bson_iter_key(&field_iter);
@@ -201,9 +201,9 @@ static int _apply_inc(bson_t *doc, bson_iter_t *inc_iter, gerror_t *error) {
         }
     }
 
-    /* Replace original document - transfer ownership properly */
-    bson_destroy(doc);      /* Destroy old doc */
-    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
+    /* Replace original document */
+    bson_destroy(doc);
+    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
 
     return 0;
 }
@@ -222,7 +222,7 @@ static int _apply_push(bson_t *doc, bson_iter_t *push_iter, gerror_t *error) {
 
     bson_t tmp;
     bson_init(&tmp);
-    bson_copy_to(&tmp, doc);
+    bson_copy_to(doc, &tmp);
 
     while (bson_iter_next(&field_iter)) {
         const char *field_name = bson_iter_key(&field_iter);
@@ -270,9 +270,9 @@ static int _apply_push(bson_t *doc, bson_iter_t *push_iter, gerror_t *error) {
         tmp = tmp2;
     }
 
-    /* Replace original document - transfer ownership properly */
-    bson_destroy(doc);      /* Destroy old doc */
-    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
+    /* Replace original document */
+    bson_destroy(doc);
+    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
 
     return 0;
 }
@@ -291,7 +291,7 @@ static int _apply_pull(bson_t *doc, bson_iter_t *pull_iter, gerror_t *error) {
 
     bson_t tmp;
     bson_init(&tmp);
-    bson_copy_to(&tmp, doc);
+    bson_copy_to(doc, &tmp);
 
     while (bson_iter_next(&field_iter)) {
         const char *field_name = bson_iter_key(&field_iter);
@@ -337,9 +337,9 @@ static int _apply_pull(bson_t *doc, bson_iter_t *pull_iter, gerror_t *error) {
         }
     }
 
-    /* Replace original document - transfer ownership properly */
-    bson_destroy(doc);      /* Destroy old doc */
-    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
+    /* Replace original document */
+    bson_destroy(doc);
+    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
 
     return 0;
 }
@@ -358,7 +358,7 @@ static int _apply_rename(bson_t *doc, bson_iter_t *rename_iter, gerror_t *error)
 
     bson_t tmp;
     bson_init(&tmp);
-    bson_copy_to(&tmp, doc);
+    bson_copy_to(doc, &tmp);
 
     while (bson_iter_next(&field_iter)) {
         const char *old_name = bson_iter_key(&field_iter);
@@ -386,9 +386,9 @@ static int _apply_rename(bson_t *doc, bson_iter_t *rename_iter, gerror_t *error)
         }
     }
 
-    /* Replace original document - transfer ownership properly */
-    bson_destroy(doc);      /* Destroy old doc */
-    bson_steal(doc, &tmp);  /* doc now owns tmp's buffer */
+    /* Replace original document */
+    bson_destroy(doc);
+    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
 
     return 0;
 }
