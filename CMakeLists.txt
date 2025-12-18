@@ -193,6 +193,7 @@ target_link_libraries(bsonmatch PUBLIC
     pcre2-8-static
     ${LOCAL_LIBBSON_LIB}
     ${SYSTEM_NETWORK_LIBS}
+    m
 )
 if(WIN32)
     target_link_libraries(bsonmatch PUBLIC bcrypt)

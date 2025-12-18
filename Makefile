@@ -1,46 +1,46 @@
-# Mongolite Makefile (Windows/MinGW wrapper for CMake)
+# Mongolite Makefile (portable, CMake-first)
 
-BUILD_DIR = build
-BUILD_TYPE = Release
-GENERATOR = "MinGW Makefiles"
+BUILD_DIR := build
+BUILD_TYPE := Release
 
-.PHONY: all build test benchmark bench-insert bench-find bench-update bench-delete clean rebuild
+.PHONY: all build test benchmark \
+        bench-insert bench-find bench-update bench-delete \
+        clean rebuild
 
 all: build
 
-# Configure and build
+# Configure and build (CMake creates the build dir)
 build:
-	@if not exist $(BUILD_DIR) mkdir $(BUILD_DIR)
-	cd $(BUILD_DIR) && cmake .. -G $(GENERATOR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
-	cd $(BUILD_DIR) && cmake --build .
+	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
+	cmake --build $(BUILD_DIR)
 
 # Run tests
 test:
-	cd $(BUILD_DIR) && ctest --output-on-failure
+	ctest --test-dir $(BUILD_DIR) --output-on-failure
 
 # Run all benchmarks
 benchmark:
-	$(BUILD_DIR)\bin\bench_insert.exe
-	$(BUILD_DIR)\bin\bench_find.exe
-	$(BUILD_DIR)\bin\bench_update.exe
-	$(BUILD_DIR)\bin\bench_delete.exe
+	$(BUILD_DIR)/bin/bench_insert
+	$(BUILD_DIR)/bin/bench_find
+	$(BUILD_DIR)/bin/bench_update
+	$(BUILD_DIR)/bin/bench_delete
 
 # Run individual benchmarks
 bench-insert:
-	$(BUILD_DIR)\bin\bench_insert.exe
+	$(BUILD_DIR)/bin/bench_insert
 
 bench-find:
-	$(BUILD_DIR)\bin\bench_find.exe
+	$(BUILD_DIR)/bin/bench_find
 
 bench-update:
-	$(BUILD_DIR)\bin\bench_update.exe
+	$(BUILD_DIR)/bin/bench_update
 
 bench-delete:
-	$(BUILD_DIR)\bin\bench_delete.exe
+	$(BUILD_DIR)/bin/bench_delete
 
-# Clean build directory
+# Clean (portable)
 clean:
-	@if exist $(BUILD_DIR) rmdir /s /q $(BUILD_DIR)
+	cmake --build $(BUILD_DIR) --target clean || true
 
 # Full rebuild
 rebuild: clean build
