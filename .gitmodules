@@ -7,7 +7,3 @@
 [submodule "external/bsonmatch"]
 	path = external/bsonmatch
 	url = https://github.com/bellirodrigo2/bsonmatch.git
-[submodule "external/cmocka"]
-	path = external/cmocka
-	url = https://git.cryptomilk.org/projects/cmocka.git
-	branch = master
