@@ -25,49 +25,72 @@
 
 /* ============================================================
  * Helper: Apply $set operator
+ * Returns a NEW document (caller must free), or NULL on error.
  * ============================================================ */
 
-static int _apply_set(bson_t *doc, bson_iter_t *set_iter, gerror_t *error) {
+static bson_t* _apply_set(const bson_t *doc, bson_iter_t *set_iter, gerror_t *error) {
     bson_iter_t field_iter;
 
     if (!bson_iter_recurse(set_iter, &field_iter)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$set requires a document");
-        return -1;
+        return NULL;
+    }
+
+    /* Start with a copy of the input document */
+    bson_t *result = bson_copy(doc);
+    if (!result) {
+        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to copy document");
+        return NULL;
     }
 
     while (bson_iter_next(&field_iter)) {
         const char *field_name = bson_iter_key(&field_iter);
 
-        /* Remove old field if exists */
-        bson_t tmp;
-        bson_init(&tmp);
-        bson_copy_to_excluding_noinit(doc, &tmp, field_name, NULL);
-
-        /* Add new field */
-        if (!bson_append_iter(&tmp, field_name, -1, &field_iter)) {
-            bson_destroy(&tmp);
-            set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Failed to append field: %s", field_name);
-            return -1;
+        /* Build new document: copy all fields except this one, then add new value */
+        bson_t *tmp = bson_new();
+        if (!tmp) {
+            bson_destroy(result);
+            set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
+            return NULL;
         }
 
-        /* Replace original document */
-        bson_destroy(doc);
-        *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
+        /* Copy all fields except the one we're setting */
+        bson_iter_t result_iter;
+        bson_iter_init(&result_iter, result);
+        while (bson_iter_next(&result_iter)) {
+            const char *key = bson_iter_key(&result_iter);
+            if (strcmp(key, field_name) != 0) {
+                bson_append_iter(tmp, key, -1, &result_iter);
+            }
+        }
+
+        /* Add new field value */
+        if (!bson_append_iter(tmp, field_name, -1, &field_iter)) {
+            bson_destroy(tmp);
+            bson_destroy(result);
+            set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Failed to append field: %s", field_name);
+            return NULL;
+        }
+
+        /* Replace result with tmp */
+        bson_destroy(result);
+        result = tmp;
     }
 
-    return 0;
+    return result;
 }
 
 /* ============================================================
  * Helper: Apply $unset operator
+ * Returns a NEW document (caller must free), or NULL on error.
  * ============================================================ */
 
-static int _apply_unset(bson_t *doc, bson_iter_t *unset_iter, gerror_t *error) {
+static bson_t* _apply_unset(const bson_t *doc, bson_iter_t *unset_iter, gerror_t *error) {
     bson_iter_t field_iter;
 
     if (!bson_iter_recurse(unset_iter, &field_iter)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$unset requires a document");
-        return -1;
+        return NULL;
     }
 
     /* Collect field names to remove */
@@ -79,14 +102,18 @@ static int _apply_unset(bson_t *doc, bson_iter_t *unset_iter, gerror_t *error) {
         fields = realloc(fields, sizeof(char*) * (n_fields + 1));
         if (!fields) {
             set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
-            return -1;
+            return NULL;
         }
         fields[n_fields++] = (char*)field_name;
     }
 
     /* Create new document without those fields */
-    bson_t tmp;
-    bson_init(&tmp);
+    bson_t *result = bson_new();
+    if (!result) {
+        free(fields);
+        set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
+        return NULL;
+    }
 
     /* Copy all fields except the ones in the unset list */
     bson_iter_t doc_iter;
@@ -104,34 +131,33 @@ static int _apply_unset(bson_t *doc, bson_iter_t *unset_iter, gerror_t *error) {
         }
 
         if (!skip) {
-            bson_append_iter(&tmp, key, -1, &doc_iter);
+            bson_append_iter(result, key, -1, &doc_iter);
         }
     }
 
     free(fields);
-
-    /* Replace original document */
-    bson_destroy(doc);
-    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
-
-    return 0;
+    return result;
 }
 
 /* ============================================================
  * Helper: Apply $inc operator
+ * Returns a NEW document (caller must free), or NULL on error.
  * ============================================================ */
 
-static int _apply_inc(bson_t *doc, bson_iter_t *inc_iter, gerror_t *error) {
+static bson_t* _apply_inc(const bson_t *doc, bson_iter_t *inc_iter, gerror_t *error) {
     bson_iter_t field_iter;
 
     if (!bson_iter_recurse(inc_iter, &field_iter)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$inc requires a document");
-        return -1;
+        return NULL;
     }
 
-    bson_t tmp;
-    /* bson_copy_to initializes dst, so don't call bson_init first */
-    bson_copy_to(doc, &tmp);
+    /* Start with a copy of the input document */
+    bson_t *result = bson_copy(doc);
+    if (!result) {
+        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to copy document");
+        return NULL;
+    }
 
     while (bson_iter_next(&field_iter)) {
         const char *field_name = bson_iter_key(&field_iter);
@@ -147,14 +173,17 @@ static int _apply_inc(bson_t *doc, bson_iter_t *inc_iter, gerror_t *error) {
         } else if (inc_type == BSON_TYPE_DOUBLE) {
             inc_value = bson_iter_double(&field_iter);
         } else {
-            bson_destroy(&tmp);
+            bson_destroy(result);
             set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$inc value must be numeric");
-            return -1;
+            return NULL;
         }
 
         /* Find existing field */
         bson_iter_t doc_field;
-        if (bson_iter_init_find(&doc_field, &tmp, field_name)) {
+        double new_value;
+        bson_type_t result_type = inc_type;
+
+        if (bson_iter_init_find(&doc_field, result, field_name)) {
             /* Field exists - increment it */
             double current_value = 0;
             bson_type_t field_type = bson_iter_type(&doc_field);
@@ -166,61 +195,80 @@ static int _apply_inc(bson_t *doc, bson_iter_t *inc_iter, gerror_t *error) {
             } else if (field_type == BSON_TYPE_DOUBLE) {
                 current_value = bson_iter_double(&doc_field);
             } else {
-                bson_destroy(&tmp);
+                bson_destroy(result);
                 set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$inc field must be numeric");
-                return -1;
+                return NULL;
             }
 
-            /* Remove old field */
-            bson_t tmp2;
-            bson_init(&tmp2);
-            bson_copy_to_excluding_noinit(&tmp, &tmp2, field_name, NULL);
-            bson_destroy(&tmp);
-            tmp = tmp2;
+            new_value = current_value + inc_value;
 
-            /* Add incremented value */
-            double new_value = current_value + inc_value;
+            /* Determine result type */
             if (field_type == BSON_TYPE_INT32 && inc_type == BSON_TYPE_INT32) {
-                BSON_APPEND_INT32(&tmp, field_name, (int32_t)new_value);
+                result_type = BSON_TYPE_INT32;
             } else if (field_type == BSON_TYPE_INT64 || inc_type == BSON_TYPE_INT64) {
-                BSON_APPEND_INT64(&tmp, field_name, (int64_t)new_value);
+                result_type = BSON_TYPE_INT64;
             } else {
-                BSON_APPEND_DOUBLE(&tmp, field_name, new_value);
+                result_type = BSON_TYPE_DOUBLE;
             }
         } else {
-            /* Field doesn't exist - set it to increment value */
-            if (inc_type == BSON_TYPE_INT32) {
-                BSON_APPEND_INT32(&tmp, field_name, (int32_t)inc_value);
-            } else if (inc_type == BSON_TYPE_INT64) {
-                BSON_APPEND_INT64(&tmp, field_name, (int64_t)inc_value);
-            } else {
-                BSON_APPEND_DOUBLE(&tmp, field_name, inc_value);
+            /* Field doesn't exist - use increment value directly */
+            new_value = inc_value;
+        }
+
+        /* Build new document: copy all fields except this one, then add new value */
+        bson_t *tmp = bson_new();
+        if (!tmp) {
+            bson_destroy(result);
+            set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
+            return NULL;
+        }
+
+        /* Copy all fields except the one we're incrementing */
+        bson_iter_t result_iter;
+        bson_iter_init(&result_iter, result);
+        while (bson_iter_next(&result_iter)) {
+            const char *key = bson_iter_key(&result_iter);
+            if (strcmp(key, field_name) != 0) {
+                bson_append_iter(tmp, key, -1, &result_iter);
             }
         }
+
+        /* Add the incremented value */
+        if (result_type == BSON_TYPE_INT32) {
+            BSON_APPEND_INT32(tmp, field_name, (int32_t)new_value);
+        } else if (result_type == BSON_TYPE_INT64) {
+            BSON_APPEND_INT64(tmp, field_name, (int64_t)new_value);
+        } else {
+            BSON_APPEND_DOUBLE(tmp, field_name, new_value);
+        }
+
+        /* Replace result with tmp */
+        bson_destroy(result);
+        result = tmp;
     }
 
-    /* Replace original document */
-    bson_destroy(doc);
-    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
-
-    return 0;
+    return result;
 }
 
 /* ============================================================
  * Helper: Apply $push operator
+ * Returns a NEW document (caller must free), or NULL on error.
  * ============================================================ */
 
-static int _apply_push(bson_t *doc, bson_iter_t *push_iter, gerror_t *error) {
+static bson_t* _apply_push(const bson_t *doc, bson_iter_t *push_iter, gerror_t *error) {
     bson_iter_t field_iter;
 
     if (!bson_iter_recurse(push_iter, &field_iter)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$push requires a document");
-        return -1;
+        return NULL;
     }
 
-    bson_t tmp;
-    /* bson_copy_to initializes dst, so don't call bson_init first */
-    bson_copy_to(doc, &tmp);
+    /* Start with a copy of the input document */
+    bson_t *result = bson_copy(doc);
+    if (!result) {
+        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to copy document");
+        return NULL;
+    }
 
     while (bson_iter_next(&field_iter)) {
         const char *field_name = bson_iter_key(&field_iter);
@@ -228,16 +276,17 @@ static int _apply_push(bson_t *doc, bson_iter_t *push_iter, gerror_t *error) {
         /* Check if field exists and is array */
         bson_iter_t doc_field;
         bson_t new_array;
+        bson_init(&new_array);
 
-        if (bson_iter_init_find(&doc_field, &tmp, field_name)) {
+        if (bson_iter_init_find(&doc_field, result, field_name)) {
             if (!BSON_ITER_HOLDS_ARRAY(&doc_field)) {
-                bson_destroy(&tmp);
+                bson_destroy(&new_array);
+                bson_destroy(result);
                 set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$push field must be array");
-                return -1;
+                return NULL;
             }
 
-            /* Copy existing array and append new element */
-            bson_init(&new_array);
+            /* Copy existing array elements */
             bson_iter_t array_iter;
             bson_iter_recurse(&doc_field, &array_iter);
 
@@ -253,43 +302,58 @@ static int _apply_push(bson_t *doc, bson_iter_t *push_iter, gerror_t *error) {
 
         } else {
             /* Field doesn't exist - create new array with one element */
-            bson_init(&new_array);
             bson_append_iter(&new_array, "0", -1, &field_iter);
         }
 
-        /* Remove old field and add new array */
-        bson_t tmp2;
-        bson_init(&tmp2);
-        bson_copy_to_excluding_noinit(&tmp, &tmp2, field_name, NULL);
-        BSON_APPEND_ARRAY(&tmp2, field_name, &new_array);
+        /* Build new document: copy all fields except this one, then add new array */
+        bson_t *tmp = bson_new();
+        if (!tmp) {
+            bson_destroy(&new_array);
+            bson_destroy(result);
+            set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
+            return NULL;
+        }
 
-        bson_destroy(&tmp);
+        /* Copy all fields except the one we're pushing to */
+        bson_iter_t result_iter;
+        bson_iter_init(&result_iter, result);
+        while (bson_iter_next(&result_iter)) {
+            const char *key = bson_iter_key(&result_iter);
+            if (strcmp(key, field_name) != 0) {
+                bson_append_iter(tmp, key, -1, &result_iter);
+            }
+        }
+
+        /* Add the new array */
+        BSON_APPEND_ARRAY(tmp, field_name, &new_array);
+
         bson_destroy(&new_array);
-        tmp = tmp2;
+        bson_destroy(result);
+        result = tmp;
     }
 
-    /* Replace original document */
-    bson_destroy(doc);
-    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
-
-    return 0;
+    return result;
 }
 
 /* ============================================================
  * Helper: Apply $pull operator
+ * Returns a NEW document (caller must free), or NULL on error.
  * ============================================================ */
 
-static int _apply_pull(bson_t *doc, bson_iter_t *pull_iter, gerror_t *error) {
+static bson_t* _apply_pull(const bson_t *doc, bson_iter_t *pull_iter, gerror_t *error) {
     bson_iter_t field_iter;
 
     if (!bson_iter_recurse(pull_iter, &field_iter)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$pull requires a document");
-        return -1;
+        return NULL;
     }
 
-    bson_t tmp;
-    /* bson_copy_to initializes dst, so don't call bson_init first */
-    bson_copy_to(doc, &tmp);
+    /* Start with a copy of the input document */
+    bson_t *result = bson_copy(doc);
+    if (!result) {
+        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to copy document");
+        return NULL;
+    }
 
     while (bson_iter_next(&field_iter)) {
         const char *field_name = bson_iter_key(&field_iter);
@@ -299,11 +363,11 @@ static int _apply_pull(bson_t *doc, bson_iter_t *pull_iter, gerror_t *error) {
 
         /* Check if field exists and is array */
         bson_iter_t doc_field;
-        if (bson_iter_init_find(&doc_field, &tmp, field_name)) {
+        if (bson_iter_init_find(&doc_field, result, field_name)) {
             if (!BSON_ITER_HOLDS_ARRAY(&doc_field)) {
-                bson_destroy(&tmp);
+                bson_destroy(result);
                 set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$pull field must be array");
-                return -1;
+                return NULL;
             }
 
             /* Create new array without matching elements */
@@ -323,74 +387,98 @@ static int _apply_pull(bson_t *doc, bson_iter_t *pull_iter, gerror_t *error) {
                 }
             }
 
-            /* Remove old field and add new array */
-            bson_t tmp2;
-            bson_init(&tmp2);
-            bson_copy_to_excluding_noinit(&tmp, &tmp2, field_name, NULL);
-            BSON_APPEND_ARRAY(&tmp2, field_name, &new_array);
+            /* Build new document: copy all fields except this one, then add new array */
+            bson_t *tmp = bson_new();
+            if (!tmp) {
+                bson_destroy(&new_array);
+                bson_destroy(result);
+                set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
+                return NULL;
+            }
 
-            bson_destroy(&tmp);
+            /* Copy all fields except the one we're pulling from */
+            bson_iter_t result_iter;
+            bson_iter_init(&result_iter, result);
+            while (bson_iter_next(&result_iter)) {
+                const char *key = bson_iter_key(&result_iter);
+                if (strcmp(key, field_name) != 0) {
+                    bson_append_iter(tmp, key, -1, &result_iter);
+                }
+            }
+
+            /* Add the new array */
+            BSON_APPEND_ARRAY(tmp, field_name, &new_array);
+
             bson_destroy(&new_array);
-            tmp = tmp2;
+            bson_destroy(result);
+            result = tmp;
         }
     }
 
-    /* Replace original document */
-    bson_destroy(doc);
-    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
-
-    return 0;
+    return result;
 }
 
 /* ============================================================
  * Helper: Apply $rename operator
+ * Returns a NEW document (caller must free), or NULL on error.
  * ============================================================ */
 
-static int _apply_rename(bson_t *doc, bson_iter_t *rename_iter, gerror_t *error) {
+static bson_t* _apply_rename(const bson_t *doc, bson_iter_t *rename_iter, gerror_t *error) {
     bson_iter_t field_iter;
 
     if (!bson_iter_recurse(rename_iter, &field_iter)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$rename requires a document");
-        return -1;
+        return NULL;
     }
 
-    bson_t tmp;
-    /* bson_copy_to initializes dst, so don't call bson_init first */
-    bson_copy_to(doc, &tmp);
+    /* Start with a copy of the input document */
+    bson_t *result = bson_copy(doc);
+    if (!result) {
+        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to copy document");
+        return NULL;
+    }
 
     while (bson_iter_next(&field_iter)) {
         const char *old_name = bson_iter_key(&field_iter);
 
         if (!BSON_ITER_HOLDS_UTF8(&field_iter)) {
-            bson_destroy(&tmp);
+            bson_destroy(result);
             set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "$rename new name must be string");
-            return -1;
+            return NULL;
         }
 
         const char *new_name = bson_iter_utf8(&field_iter, NULL);
 
         /* Find old field */
         bson_iter_t doc_field;
-        if (bson_iter_init_find(&doc_field, &tmp, old_name)) {
-            /* Create new document without the old field */
-            bson_t tmp2;
-            bson_init(&tmp2);
-            bson_copy_to_excluding_noinit(&tmp, &tmp2, old_name, NULL);
+        if (bson_iter_init_find(&doc_field, result, old_name)) {
+            /* Build new document: copy all fields except old, add with new name */
+            bson_t *tmp = bson_new();
+            if (!tmp) {
+                bson_destroy(result);
+                set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
+                return NULL;
+            }
 
-            /* Add value with new name BEFORE destroying tmp (doc_field points into tmp) */
-            bson_append_iter(&tmp2, new_name, -1, &doc_field);
+            /* Copy all fields except the one being renamed */
+            bson_iter_t result_iter;
+            bson_iter_init(&result_iter, result);
+            while (bson_iter_next(&result_iter)) {
+                const char *key = bson_iter_key(&result_iter);
+                if (strcmp(key, old_name) != 0) {
+                    bson_append_iter(tmp, key, -1, &result_iter);
+                }
+            }
 
-            /* Now safe to destroy tmp */
-            bson_destroy(&tmp);
-            tmp = tmp2;
+            /* Add field with new name (doc_field still points to valid result data) */
+            bson_append_iter(tmp, new_name, -1, &doc_field);
+
+            bson_destroy(result);
+            result = tmp;
         }
     }
 
-    /* Replace original document */
-    bson_destroy(doc);
-    *doc = tmp;  /* Direct assignment - doc now owns tmp's buffer */
-
-    return 0;
+    return result;
 }
 
 /* ============================================================
@@ -409,42 +497,34 @@ static bson_t* _apply_update(const bson_t *original, const bson_t *update, gerro
 
     while (bson_iter_next(&iter)) {
         const char *op = bson_iter_key(&iter);
+        bson_t *new_doc = NULL;
 
         if (strcmp(op, "$set") == 0) {
-            if (_apply_set(doc, &iter, error) != 0) {
-                bson_destroy(doc);
-                return NULL;
-            }
+            new_doc = _apply_set(doc, &iter, error);
         } else if (strcmp(op, "$unset") == 0) {
-            if (_apply_unset(doc, &iter, error) != 0) {
-                bson_destroy(doc);
-                return NULL;
-            }
+            new_doc = _apply_unset(doc, &iter, error);
         } else if (strcmp(op, "$inc") == 0) {
-            if (_apply_inc(doc, &iter, error) != 0) {
-                bson_destroy(doc);
-                return NULL;
-            }
+            new_doc = _apply_inc(doc, &iter, error);
         } else if (strcmp(op, "$push") == 0) {
-            if (_apply_push(doc, &iter, error) != 0) {
-                bson_destroy(doc);
-                return NULL;
-            }
+            new_doc = _apply_push(doc, &iter, error);
         } else if (strcmp(op, "$pull") == 0) {
-            if (_apply_pull(doc, &iter, error) != 0) {
-                bson_destroy(doc);
-                return NULL;
-            }
+            new_doc = _apply_pull(doc, &iter, error);
         } else if (strcmp(op, "$rename") == 0) {
-            if (_apply_rename(doc, &iter, error) != 0) {
-                bson_destroy(doc);
-                return NULL;
-            }
+            new_doc = _apply_rename(doc, &iter, error);
         } else {
             bson_destroy(doc);
             set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Unknown update operator: %s", op);
             return NULL;
         }
+
+        if (!new_doc) {
+            bson_destroy(doc);
+            return NULL;
+        }
+
+        /* Replace old document with new one */
+        bson_destroy(doc);
+        doc = new_doc;
     }
 
     return doc;
