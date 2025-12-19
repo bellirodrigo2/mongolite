@@ -10,6 +10,7 @@
 
 #include "mongolite_internal.h"
 #include "mongoc-matcher.h"
+#include "macros.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -22,14 +23,15 @@
  * Extracts the OID if found.
  * ============================================================ */
 
+MONGOLITE_HOT
 static bool _is_id_query(const bson_t *filter, bson_oid_t *out_oid) {
-    if (!filter || bson_empty(filter)) {
+    if (MONGOLITE_UNLIKELY(!filter || bson_empty(filter))) {
         return false;
     }
 
     /* Check if filter has exactly one field "_id" */
     bson_iter_t iter;
-    if (!bson_iter_init(&iter, filter)) {
+    if (MONGOLITE_UNLIKELY(!bson_iter_init(&iter, filter))) {
         return false;
     }
 
@@ -40,7 +42,7 @@ static bool _is_id_query(const bson_t *filter, bson_oid_t *out_oid) {
         field_count++;
         if (strcmp(bson_iter_key(&iter), "_id") == 0) {
             has_id = true;
-            if (BSON_ITER_HOLDS_OID(&iter) && out_oid) {
+            if (MONGOLITE_LIKELY(BSON_ITER_HOLDS_OID(&iter) && out_oid)) {
                 bson_oid_copy(bson_iter_oid(&iter), out_oid);
             } else {
                 /* _id is not an OID - can't optimize */
@@ -56,25 +58,26 @@ static bool _is_id_query(const bson_t *filter, bson_oid_t *out_oid) {
  * Internal: Get document by _id (direct lookup)
  * ============================================================ */
 
+MONGOLITE_HOT
 static bson_t* _find_by_id(mongolite_db_t *db, wtree_tree_t *tree,
                            const bson_oid_t *oid, gerror_t *error) {
     wtree_txn_t *txn = _mongolite_get_read_txn(db, error);
-    if (!txn) return NULL;
+    if (MONGOLITE_UNLIKELY(!txn)) return NULL;
 
     const void *value;
     size_t value_size;
     int rc = wtree_get_txn(txn, tree, oid->bytes, sizeof(oid->bytes),
                            &value, &value_size, error);
 
-    if (rc != 0) {
-        _mongolite_abort_if_auto(db, txn);
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
+        _mongolite_release_read_txn(db, txn);
         return NULL;
     }
 
     /* Copy BSON document */
     bson_t *doc = bson_new_from_data(value, value_size);
 
-    _mongolite_abort_if_auto(db, txn);
+    _mongolite_release_read_txn(db, txn);
     return doc;
 }
 
@@ -89,7 +92,7 @@ static bson_t* _find_one_scan(mongolite_db_t *db, wtree_tree_t *tree,
     if (filter && !bson_empty(filter)) {
         bson_error_t bson_err;
         matcher = mongoc_matcher_new(filter, &bson_err);
-        if (!matcher) {
+        if (MONGOLITE_UNLIKELY(!matcher)) {
             set_error(error, "bsonmatch", MONGOLITE_EQUERY,
                      "Invalid query: %s", bson_err.message);
             return NULL;
@@ -97,32 +100,32 @@ static bson_t* _find_one_scan(mongolite_db_t *db, wtree_tree_t *tree,
     }
 
     wtree_txn_t *txn = _mongolite_get_read_txn(db, error);
-    if (!txn) {
+    if (MONGOLITE_UNLIKELY(!txn)) {
         if (matcher) mongoc_matcher_destroy(matcher);
         return NULL;
     }
 
     wtree_iterator_t *iter = wtree_iterator_create_with_txn(tree, txn, error);
-    if (!iter) {
-        _mongolite_abort_if_auto(db, txn);
+    if (MONGOLITE_UNLIKELY(!iter)) {
+        _mongolite_release_read_txn(db, txn);
         if (matcher) mongoc_matcher_destroy(matcher);
         return NULL;
     }
 
     bson_t *result = NULL;
 
-    if (wtree_iterator_first(iter)) {
+    if (MONGOLITE_LIKELY(wtree_iterator_first(iter))) {
         do {
             const void *value;
             size_t value_size;
 
-            if (!wtree_iterator_value(iter, &value, &value_size)) {
+            if (MONGOLITE_UNLIKELY(!wtree_iterator_value(iter, &value, &value_size))) {
                 continue;
             }
 
             /* Parse document */
             bson_t doc;
-            if (!bson_init_static(&doc, value, value_size)) {
+            if (MONGOLITE_UNLIKELY(!bson_init_static(&doc, value, value_size))) {
                 continue;
             }
 
@@ -141,7 +144,7 @@ static bson_t* _find_one_scan(mongolite_db_t *db, wtree_tree_t *tree,
     }
 
     wtree_iterator_close(iter);
-    _mongolite_abort_if_auto(db, txn);
+    _mongolite_release_read_txn(db, txn);
     if (matcher) mongoc_matcher_destroy(matcher);
 
     return result;

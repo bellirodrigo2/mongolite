@@ -86,6 +86,7 @@ typedef struct mongolite_tree_cache_entry {
     char *name;                 /* Collection/index name */
     char *tree_name;            /* Full LMDB tree name (col:xxx or idx:xxx) */
     wtree_tree_t *tree;         /* Open tree handle */
+    int64_t doc_count;          /* Cached document count (avoids schema reads) */
     struct mongolite_tree_cache_entry *next;
 } mongolite_tree_cache_entry_t;
 
@@ -108,6 +109,9 @@ struct mongolite_db {
     int changes;                        /* Docs affected by last operation */
     bool in_transaction;                /* Explicit transaction active */
     wtree_txn_t *current_txn;           /* Current explicit transaction */
+
+    /* Read transaction pool (optimization: reuse via reset/renew) */
+    wtree_txn_t *read_txn_pool;         /* Cached read transaction */
 
     /* Tree cache (simple linked list for now) */
     mongolite_tree_cache_entry_t *tree_cache;
@@ -207,9 +211,13 @@ int _mongolite_schema_entry_from_bson(const bson_t *doc,
 wtree_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name);
 int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
                               const char *tree_name, const bson_oid_t *oid,
-                              wtree_tree_t *tree);
+                              wtree_tree_t *tree, int64_t doc_count);
 void _mongolite_tree_cache_remove(mongolite_db_t *db, const char *name);
 void _mongolite_tree_cache_clear(mongolite_db_t *db);
+
+/* Doc count cache operations */
+int64_t _mongolite_tree_cache_get_doc_count(mongolite_db_t *db, const char *name);
+void _mongolite_tree_cache_update_doc_count(mongolite_db_t *db, const char *name, int64_t delta);
 
 /* ============================================================
  * Internal Utilities
@@ -237,6 +245,7 @@ char* _mongolite_strndup(const char *s, size_t n);
 /* Transaction helpers */
 wtree_txn_t* _mongolite_get_write_txn(mongolite_db_t *db, gerror_t *error);
 wtree_txn_t* _mongolite_get_read_txn(mongolite_db_t *db, gerror_t *error);
+void _mongolite_release_read_txn(mongolite_db_t *db, wtree_txn_t *txn);
 int _mongolite_commit_if_auto(mongolite_db_t *db, wtree_txn_t *txn, gerror_t *error);
 void _mongolite_abort_if_auto(mongolite_db_t *db, wtree_txn_t *txn);
 

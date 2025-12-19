@@ -105,8 +105,8 @@ int mongolite_collection_create(mongolite_db_t *db, const char *name,
         return rc;
     }
 
-    /* Cache the tree handle */
-    _mongolite_tree_cache_put(db, name, entry.tree_name, &entry.oid, tree);
+    /* Cache the tree handle (new collection starts with doc_count=0) */
+    _mongolite_tree_cache_put(db, name, entry.tree_name, &entry.oid, tree, 0);
 
     _mongolite_schema_entry_free(&entry);
     _mongolite_unlock(db);
@@ -235,8 +235,14 @@ int64_t mongolite_collection_count(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* If no filter, return cached count from schema */
+    /* If no filter, return cached count (fast path) */
     if (!filter || bson_empty(filter)) {
+        /* Try cache first */
+        int64_t cached_count = _mongolite_tree_cache_get_doc_count(db, collection);
+        if (cached_count >= 0) {
+            return cached_count;
+        }
+        /* Fallback to schema if not cached */
         mongolite_schema_entry_t entry = {0};
         int rc = _mongolite_schema_get(db, collection, &entry, error);
         if (rc != 0) {
@@ -353,8 +359,8 @@ wtree_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *nam
         return NULL;
     }
 
-    /* Cache it */
-    _mongolite_tree_cache_put(db, name, entry.tree_name, &entry.oid, tree);
+    /* Cache it with doc_count from schema */
+    _mongolite_tree_cache_put(db, name, entry.tree_name, &entry.oid, tree, entry.doc_count);
 
     _mongolite_schema_entry_free(&entry);
     return tree;

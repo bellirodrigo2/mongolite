@@ -108,17 +108,14 @@ TEST(matcher_and_operator) {
 TEST(matcher_regex) {
     bson_error_t error;
 
-    /* Use stack allocation with explicit init to ensure full initialization */
-    bson_t query;
-    bson_init(&query);
+    /* Zero-initialize stack-allocated bson_t to avoid valgrind warnings about uninitialized padding */
+    bson_t query = BSON_INITIALIZER;
     bson_append_regex(&query, "email", -1, "@example\\.com$", "");
 
-    bson_t doc_match;
-    bson_init(&doc_match);
+    bson_t doc_match = BSON_INITIALIZER;
     bson_append_utf8(&doc_match, "email", -1, "user@example.com", -1);
 
-    bson_t doc_nomatch;
-    bson_init(&doc_nomatch);
+    bson_t doc_nomatch = BSON_INITIALIZER;
     bson_append_utf8(&doc_nomatch, "email", -1, "user@other.com", -1);
 
     mongoc_matcher_t *matcher = mongoc_matcher_new(&query, &error);
@@ -137,17 +134,14 @@ TEST(matcher_regex) {
 TEST(matcher_regex_case_insensitive) {
     bson_error_t error;
 
-    /* Use stack allocation with explicit init */
-    bson_t query;
-    bson_init(&query);
+    /* Zero-initialize stack-allocated bson_t to avoid valgrind warnings about uninitialized padding */
+    bson_t query = BSON_INITIALIZER;
     bson_append_regex(&query, "name", -1, "john", "i");
 
-    bson_t doc_match;
-    bson_init(&doc_match);
+    bson_t doc_match = BSON_INITIALIZER;
     bson_append_utf8(&doc_match, "name", -1, "John Doe", -1);
 
-    bson_t doc_nomatch;
-    bson_init(&doc_nomatch);
+    bson_t doc_nomatch = BSON_INITIALIZER;
     bson_append_utf8(&doc_nomatch, "name", -1, "Jane Doe", -1);
 
     mongoc_matcher_t *matcher = mongoc_matcher_new(&query, &error);

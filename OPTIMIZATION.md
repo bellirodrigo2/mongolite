@@ -57,63 +57,36 @@
 
 ### Priority 1: High Impact, Low Difficulty
 
-#### 1.1 Read Transaction Pooling (NEW - wtree_txn_reset/renew)
+#### 1.1 Read Transaction Pooling ✅ COMPLETED
 **Operation:** Find (all read operations)
 **Difficulty:** ★★☆☆☆
-**Expected Gain:** 20-40% for read-heavy workloads
+**Actual Gain:** 42% for FindOneById, 27% for FindOneByRange
 
-LMDB's `mdb_txn_begin` is expensive (memory allocation + snapshot).
-`mdb_txn_renew` only acquires a snapshot (much faster).
+Implemented using `wtree_txn_reset/renew` to pool read transactions.
 
-**Now available in wtree:**
-```c
-// wtree.h - NEW functions
-void wtree_txn_reset(wtree_txn_t *txn);   // Release snapshot, keep handle
-int wtree_txn_renew(wtree_txn_t *txn, gerror_t *error);  // Acquire new snapshot
-```
+**Implementation:** `src/mongolite_txn.c` - `_mongolite_get_read_txn()`, `_mongolite_release_read_txn()`
 
-**Implementation in mongolite:**
-```c
-// In mongolite_db structure, add:
-struct mongolite_db {
-    // ... existing fields ...
-    wtree_txn_t *read_txn_pool;  // Cached read transaction
-};
+**Benchmark Results (Linux, 12 cores @ 4.5GHz):**
+| Operation | Before | After | Improvement |
+|-----------|--------|-------|-------------|
+| FindOneById | 0.708μs | 0.410μs | **42% faster** |
+| FindOneByRange | 1.09μs | 0.794μs | **27% faster** |
 
-// In _mongolite_get_read_txn():
-wtree_txn_t* _mongolite_get_read_txn(mongolite_db_t *db, gerror_t *error) {
-    if (db->explicit_txn) return db->explicit_txn;
+---
 
-    // Reuse pooled transaction if available
-    if (db->read_txn_pool) {
-        if (wtree_txn_renew(db->read_txn_pool, error) == 0) {
-            return db->read_txn_pool;
-        }
-        // Renew failed, abort and create new
-        wtree_txn_abort(db->read_txn_pool);
-        db->read_txn_pool = NULL;
-    }
+#### 1.1b Doc Count Caching ✅ COMPLETED
+**Operation:** Insert, Delete, Collection Count
+**Difficulty:** ★☆☆☆☆
+**Expected Gain:** Reduces BSON parsing overhead on every insert/delete
 
-    // Create new transaction
-    wtree_txn_t *txn = wtree_txn_begin(db->wtree_db, false, error);
-    db->read_txn_pool = txn;  // Cache for reuse
-    return txn;
-}
+Cached `doc_count` in tree cache entry to avoid reading/parsing schema on every doc count update.
 
-// In _mongolite_release_read_txn():
-void _mongolite_release_read_txn(mongolite_db_t *db, wtree_txn_t *txn) {
-    if (db->explicit_txn) return;  // Don't touch explicit transactions
-
-    // Reset instead of abort - keeps handle for reuse
-    wtree_txn_reset(txn);
-}
-```
-
-**Benchmark comparison:**
-| Operation | Before | After (estimated) |
-|-----------|--------|-------------------|
-| FindOneById | 1.4μs | ~1.0μs |
-| FindOneByRefId | 12.7μs | ~10μs |
+**Implementation:**
+- `mongolite_tree_cache_entry_t.doc_count` - cached count
+- `_mongolite_tree_cache_update_doc_count()` - delta update
+- `_mongolite_tree_cache_get_doc_count()` - fast retrieval
+- `mongolite_collection_count()` - uses cache first
+- `_mongolite_update_doc_count_txn()` - updates cache + schema
 
 ---
 
@@ -400,14 +373,16 @@ for (int i = 0; i < n; i++) {
 
 ### Where to Apply Hints
 
-| Location | Hint | Reason |
+| Location | Hint | Status |
 |----------|------|--------|
-| `_find_by_id` | `MONGOLITE_HOT` | Called frequently |
-| `_is_id_query` | `MONGOLITE_PURE` | No side effects |
-| Error paths | `MONGOLITE_UNLIKELY` | Rarely taken |
-| `set_error` | `MONGOLITE_COLD` | Only on errors |
-| `bson_compare_*` | `MONGOLITE_PURE` | Read-only comparison |
-| `_mongolite_tree_cache_get` | `MONGOLITE_HOT` | Called every operation |
+| `_find_by_id` | `MONGOLITE_HOT` | ✅ Applied |
+| `_is_id_query` | `MONGOLITE_HOT` | ✅ Applied |
+| `_mongolite_get_read_txn` | `MONGOLITE_HOT` | ✅ Applied |
+| `_mongolite_get_write_txn` | `MONGOLITE_HOT` | ✅ Applied |
+| `_mongolite_release_read_txn` | `MONGOLITE_HOT` | ✅ Applied |
+| Error paths | `MONGOLITE_UNLIKELY` | ✅ Applied |
+| `_mongolite_tree_cache_get` | `MONGOLITE_HOT` | Pending |
+| `set_error` | `MONGOLITE_COLD` | Pending |
 
 ---
 

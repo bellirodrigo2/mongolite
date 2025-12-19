@@ -35,9 +35,8 @@ else()
     if (MSVC)
         add_compile_options(/O2 /GL)  # GL = Link-time code generation
     else()
-            # add_compile_options(-O3 -march=native -flto)
+        # add_compile_options(-O3 -march=native -flto)
         # add_link_options(-flto)
-        add_compile_options(-O3)
     endif()
 endif()
 

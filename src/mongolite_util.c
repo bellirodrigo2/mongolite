@@ -176,7 +176,7 @@ wtree_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name) {
 
 int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
                               const char *tree_name, const bson_oid_t *oid,
-                              wtree_tree_t *tree) {
+                              wtree_tree_t *tree, int64_t doc_count) {
     if (!db || !name || !tree_name || !tree) return MONGOLITE_EINVAL;
 
     /* Check if already exists */
@@ -190,6 +190,7 @@ int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
     entry->name = strdup(name);
     entry->tree_name = strdup(tree_name);
     entry->tree = tree;
+    entry->doc_count = doc_count;
     if (oid) {
         memcpy(&entry->oid, oid, sizeof(bson_oid_t));
     }
@@ -232,6 +233,31 @@ void _mongolite_tree_cache_clear(mongolite_db_t *db) {
         db->tree_cache = next;
     }
     db->tree_cache_count = 0;
+}
+
+int64_t _mongolite_tree_cache_get_doc_count(mongolite_db_t *db, const char *name) {
+    if (!db || !name) return -1;
+    mongolite_tree_cache_entry_t *entry = db->tree_cache;
+    while (entry) {
+        if (strcmp(entry->name, name) == 0) {
+            return entry->doc_count;
+        }
+        entry = entry->next;
+    }
+    return -1;  /* Not found */
+}
+
+void _mongolite_tree_cache_update_doc_count(mongolite_db_t *db, const char *name, int64_t delta) {
+    if (!db || !name) return;
+    mongolite_tree_cache_entry_t *entry = db->tree_cache;
+    while (entry) {
+        if (strcmp(entry->name, name) == 0) {
+            entry->doc_count += delta;
+            if (entry->doc_count < 0) entry->doc_count = 0;
+            return;
+        }
+        entry = entry->next;
+    }
 }
 
 /* ============================================================

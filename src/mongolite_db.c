@@ -123,6 +123,12 @@ int mongolite_close(mongolite_db_t *db) {
         db->in_transaction = false;
     }
 
+    /* Clean up pooled read transaction */
+    if (db->read_txn_pool) {
+        wtree_txn_abort(db->read_txn_pool);
+        db->read_txn_pool = NULL;
+    }
+
     /* Clear tree cache */
     _mongolite_tree_cache_clear(db);
 
