@@ -247,11 +247,20 @@ int64_t mongolite_collection_count(mongolite_db_t *db, const char *collection,
         return count;
     }
 
-    /* With filter: need to iterate and count matches */
-    /* TODO: Implement filtered count using cursor */
-    set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR,
-             "Filtered count not yet implemented");
-    return -1;
+    /* With filter: iterate and count matches using cursor */
+    mongolite_cursor_t *cursor = mongolite_find(db, collection, filter, NULL, error);
+    if (!cursor) {
+        return -1;
+    }
+
+    int64_t count = 0;
+    const bson_t *doc;
+    while (mongolite_cursor_next(cursor, &doc)) {
+        count++;
+    }
+
+    mongolite_cursor_destroy(cursor);
+    return count;
 }
 
 /* ============================================================
