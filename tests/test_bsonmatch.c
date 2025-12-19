@@ -107,11 +107,16 @@ TEST(matcher_and_operator) {
 
 TEST(matcher_regex) {
     bson_error_t error;
-    /* Use BCON_REGEX to create native BSON_TYPE_REGEX */
-    bson_t *query = BCON_NEW("email", BCON_REGEX("@example\\.com$", ""));
 
-    bson_t *doc_match = BCON_NEW("email", BCON_UTF8("user@example.com"));
-    bson_t *doc_nomatch = BCON_NEW("email", BCON_UTF8("user@other.com"));
+    /* Build query with regex using proper API to avoid uninitialized memory */
+    bson_t *query = bson_new();
+    bson_append_regex(query, "email", -1, "@example\\.com$", "");
+
+    bson_t *doc_match = bson_new();
+    bson_append_utf8(doc_match, "email", -1, "user@example.com", -1);
+
+    bson_t *doc_nomatch = bson_new();
+    bson_append_utf8(doc_nomatch, "email", -1, "user@other.com", -1);
 
     mongoc_matcher_t *matcher = mongoc_matcher_new(query, &error);
     TEST_ASSERT_NOT_NULL(matcher);
@@ -128,11 +133,16 @@ TEST(matcher_regex) {
 
 TEST(matcher_regex_case_insensitive) {
     bson_error_t error;
-    /* "i" option for case insensitive */
-    bson_t *query = BCON_NEW("name", BCON_REGEX("john", "i"));
 
-    bson_t *doc_match = BCON_NEW("name", BCON_UTF8("John Doe"));
-    bson_t *doc_nomatch = BCON_NEW("name", BCON_UTF8("Jane Doe"));
+    /* Build query with case-insensitive regex */
+    bson_t *query = bson_new();
+    bson_append_regex(query, "name", -1, "john", "i");
+
+    bson_t *doc_match = bson_new();
+    bson_append_utf8(doc_match, "name", -1, "John Doe", -1);
+
+    bson_t *doc_nomatch = bson_new();
+    bson_append_utf8(doc_nomatch, "name", -1, "Jane Doe", -1);
 
     mongoc_matcher_t *matcher = mongoc_matcher_new(query, &error);
     TEST_ASSERT_NOT_NULL(matcher);
