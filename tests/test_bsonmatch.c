@@ -108,52 +108,58 @@ TEST(matcher_and_operator) {
 TEST(matcher_regex) {
     bson_error_t error;
 
-    /* Build query with regex using proper API to avoid uninitialized memory */
-    bson_t *query = bson_new();
-    bson_append_regex(query, "email", -1, "@example\\.com$", "");
+    /* Use stack allocation with explicit init to ensure full initialization */
+    bson_t query;
+    bson_init(&query);
+    bson_append_regex(&query, "email", -1, "@example\\.com$", "");
 
-    bson_t *doc_match = bson_new();
-    bson_append_utf8(doc_match, "email", -1, "user@example.com", -1);
+    bson_t doc_match;
+    bson_init(&doc_match);
+    bson_append_utf8(&doc_match, "email", -1, "user@example.com", -1);
 
-    bson_t *doc_nomatch = bson_new();
-    bson_append_utf8(doc_nomatch, "email", -1, "user@other.com", -1);
+    bson_t doc_nomatch;
+    bson_init(&doc_nomatch);
+    bson_append_utf8(&doc_nomatch, "email", -1, "user@other.com", -1);
 
-    mongoc_matcher_t *matcher = mongoc_matcher_new(query, &error);
+    mongoc_matcher_t *matcher = mongoc_matcher_new(&query, &error);
     TEST_ASSERT_NOT_NULL(matcher);
 
-    TEST_ASSERT_TRUE(mongoc_matcher_match(matcher, doc_match));
-    TEST_ASSERT_FALSE(mongoc_matcher_match(matcher, doc_nomatch));
+    TEST_ASSERT_TRUE(mongoc_matcher_match(matcher, &doc_match));
+    TEST_ASSERT_FALSE(mongoc_matcher_match(matcher, &doc_nomatch));
 
     mongoc_matcher_destroy(matcher);
-    bson_destroy(query);
-    bson_destroy(doc_match);
-    bson_destroy(doc_nomatch);
+    bson_destroy(&query);
+    bson_destroy(&doc_match);
+    bson_destroy(&doc_nomatch);
     return 0;
 }
 
 TEST(matcher_regex_case_insensitive) {
     bson_error_t error;
 
-    /* Build query with case-insensitive regex */
-    bson_t *query = bson_new();
-    bson_append_regex(query, "name", -1, "john", "i");
+    /* Use stack allocation with explicit init */
+    bson_t query;
+    bson_init(&query);
+    bson_append_regex(&query, "name", -1, "john", "i");
 
-    bson_t *doc_match = bson_new();
-    bson_append_utf8(doc_match, "name", -1, "John Doe", -1);
+    bson_t doc_match;
+    bson_init(&doc_match);
+    bson_append_utf8(&doc_match, "name", -1, "John Doe", -1);
 
-    bson_t *doc_nomatch = bson_new();
-    bson_append_utf8(doc_nomatch, "name", -1, "Jane Doe", -1);
+    bson_t doc_nomatch;
+    bson_init(&doc_nomatch);
+    bson_append_utf8(&doc_nomatch, "name", -1, "Jane Doe", -1);
 
-    mongoc_matcher_t *matcher = mongoc_matcher_new(query, &error);
+    mongoc_matcher_t *matcher = mongoc_matcher_new(&query, &error);
     TEST_ASSERT_NOT_NULL(matcher);
 
-    TEST_ASSERT_TRUE(mongoc_matcher_match(matcher, doc_match));
-    TEST_ASSERT_FALSE(mongoc_matcher_match(matcher, doc_nomatch));
+    TEST_ASSERT_TRUE(mongoc_matcher_match(matcher, &doc_match));
+    TEST_ASSERT_FALSE(mongoc_matcher_match(matcher, &doc_nomatch));
 
     mongoc_matcher_destroy(matcher);
-    bson_destroy(query);
-    bson_destroy(doc_match);
-    bson_destroy(doc_nomatch);
+    bson_destroy(&query);
+    bson_destroy(&doc_match);
+    bson_destroy(&doc_nomatch);
     return 0;
 }
 
