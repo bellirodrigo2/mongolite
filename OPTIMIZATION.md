@@ -139,16 +139,6 @@ wtree_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name);
 
 `_apply_set`, `_apply_inc` create temporary BSON documents for each field modification.
 
-```c
-// Current: Multiple bson_copy_to calls per update
-bson_copy_to(doc, &tmp);
-// ... modify ...
-bson_destroy(doc);
-*doc = tmp;
-
-// Optimization: Build result document incrementally
-// Use bson_copy_to_excluding_noinit only once at the end
-```
 
 #### 1.3 Direct _id Lookup for Update/Delete
 **Operation:** Update, Delete
@@ -322,21 +312,6 @@ BSON is already compact, but could add optional zstd compression for large docum
 | FindByField | 78k/s | 100k/s | 200k/s (indexed) |
 | UpdateById | 3.3k/s | 5k/s | 10-30k/s |
 | DeleteById | 2.7k/s | 4k/s | 10-30k/s |
-
----
-
-## Known Issues
-
-### Benchmark Stability
-Some benchmarks cause heap corruption on Windows when running multiple fixture instances. Affected:
-- `BM_UpdateOneMultiOp` (combined $set + $inc)
-- `BM_ReplaceOne`
-- `BM_Upsert`
-- `BM_UpdateOneJson`
-
-**Root cause:** Under investigation. Likely related to fixture teardown timing on Windows.
-
-**Workaround:** Run affected benchmarks individually or skip in CI.
 
 ---
 

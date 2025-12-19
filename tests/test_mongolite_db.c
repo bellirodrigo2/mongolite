@@ -88,7 +88,7 @@ static int test_open_with_config(void) {
 
     /* Create config with custom settings */
     db_config_t config = {0};
-    config.max_bytes = 512ULL * 1024 * 1024;  /* 512MB */
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
     config.max_dbs = 64;
 
     /* Create user metadata */
@@ -128,9 +128,11 @@ static int test_reopen_database(void) {
 
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
-
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
     /* First open - create database */
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "first open should succeed: %s", error.message);
 
     /* Set some metadata */
@@ -144,7 +146,7 @@ static int test_reopen_database(void) {
 
     /* Reopen */
     db = NULL;
-    rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "reopen should succeed: %s", error.message);
     TEST_ASSERT(db != NULL, "db should not be NULL after reopen");
 
@@ -164,7 +166,10 @@ static int test_schema_operations(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed: %s", error.message);
 
     /* Create a schema entry for a collection */
@@ -245,7 +250,10 @@ static int test_schema_list(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed: %s", error.message);
 
     /* Create multiple schema entries */
@@ -295,7 +303,9 @@ static int test_transactions(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed: %s", error.message);
 
     /* Begin transaction */
@@ -407,7 +417,10 @@ static int test_sync(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed: %s", error.message);
 
     /* Create some data */

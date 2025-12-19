@@ -51,7 +51,10 @@ static mongolite_db_t* setup_test_db(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    if (mongolite_open(TEST_DB_PATH, &db, NULL, &error) != 0) {
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    if (mongolite_open(TEST_DB_PATH, &db, &config, &error) != 0) {
         printf("Failed to open db: %s\n", error.message);
         return NULL;
     }

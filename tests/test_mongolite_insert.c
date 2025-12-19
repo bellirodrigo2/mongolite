@@ -88,7 +88,10 @@ static int test_insert_one_with_id(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "users", NULL, &error);
@@ -125,8 +128,10 @@ static int test_insert_duplicate_id(void) {
 
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
-
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "users", NULL, &error);
@@ -173,7 +178,10 @@ static int test_insert_many(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "products", NULL, &error);
@@ -235,7 +243,10 @@ static int test_insert_one_json(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "events", NULL, &error);
@@ -267,7 +278,10 @@ static int test_insert_many_json(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "logs", NULL, &error);
@@ -302,7 +316,9 @@ static int test_insert_invalid_json(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "test", NULL, &error);
@@ -329,7 +345,9 @@ static int test_insert_no_collection(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     /* Try to insert into non-existent collection */
@@ -354,8 +372,10 @@ static int test_insert_large_batch(void) {
 
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
-
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "batch", NULL, &error);

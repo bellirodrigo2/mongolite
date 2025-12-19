@@ -696,6 +696,28 @@ TEST(binary_data) {
     wtree_db_close(db);
     return 0;
 }
+TEST(txn_reset_and_renew_readonly) {
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    TEST_ASSERT_NOT_NULL(db);
+
+    // read-only txn
+    wtree_txn_t *txn = wtree_txn_begin(db, false, &error);
+    TEST_ASSERT_NOT_NULL(txn);
+
+    // reset deve ser seguro
+    wtree_txn_reset(txn);
+
+    // renew deve funcionar
+    int rc = wtree_txn_renew(txn, &error);
+    TEST_ASSERT_EQUAL(0, rc);
+
+    wtree_txn_abort(txn);
+    wtree_db_close(db);
+    return 0;
+}
+
 
 // ============= Main Test Suite =============
 
@@ -747,6 +769,10 @@ TEST_SUITE_BEGIN("wtree tests")
     // Other tests
     RUN_TEST(test_error_handling);
     RUN_TEST(test_binary_data);
+
+    // Transaction reset and renew test
+    RUN_TEST(test_txn_reset_and_renew_readonly);
+    RUN_TEST(test_iterator_with_txn);
     
     tearDown();
     final_cleanup();  // Final cleanup

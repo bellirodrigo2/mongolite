@@ -48,7 +48,10 @@ static int test_basic_full_cycle(void) {
     gerror_t error = {0};
 
     /* 1. Open database */
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed: %s", error.message);
 
     /* 2. Create collection */
@@ -129,7 +132,10 @@ static int test_multiple_collections(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     /* Create multiple collections */
@@ -208,7 +214,10 @@ static int test_data_persistence(void) {
     /* Phase 1: Create and insert */
     {
         mongolite_db_t *db = NULL;
-        int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+        
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+        int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
         TEST_ASSERT(rc == 0, "open should succeed");
 
         rc = mongolite_collection_create(db, "persistent", NULL, &error);
@@ -229,7 +238,10 @@ static int test_data_persistence(void) {
     /* Phase 2: Reopen and verify */
     {
         mongolite_db_t *db = NULL;
-        int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+        
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+        int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
         TEST_ASSERT(rc == 0, "reopen should succeed");
 
         /* Verify collection exists */
@@ -276,7 +288,10 @@ static int test_large_dataset(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "large", NULL, &error);
@@ -355,7 +370,10 @@ static int test_complex_queries(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "employees", NULL, &error);
@@ -506,7 +524,10 @@ static int test_nested_documents(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "nested", NULL, &error);
@@ -576,7 +597,10 @@ static int test_empty_results(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "empty", NULL, &error);
@@ -637,7 +661,10 @@ static int test_special_characters(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "unicode", NULL, &error);
@@ -690,7 +717,10 @@ static int test_cursor_exhausted(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "cursor_test", NULL, &error);

@@ -24,29 +24,22 @@ static void cleanup(void) {
 int main(void) {
     cleanup();
 
-    printf("=== Debug: Combined $set + $inc ===\n\n");
-
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    printf("1. Opening database...\n");
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     if (rc != 0) {
         printf("FAILED to open db: %s\n", error.message);
         return 1;
     }
-    printf("   OK\n");
-
-    printf("2. Creating collection...\n");
     rc = mongolite_collection_create(db, "test", NULL, &error);
     if (rc != 0) {
         printf("FAILED to create collection: %s\n", error.message);
         mongolite_close(db);
         return 1;
     }
-    printf("   OK\n");
-
-    printf("3. Inserting document...\n");
     bson_oid_t id;
     rc = mongolite_insert_one_json(db, "test",
         "{\"name\": \"Test\", \"age\": 30, \"score\": 100.0, \"active\": false, \"department\": \"eng\"}",
@@ -58,9 +51,6 @@ int main(void) {
     }
     char oid_str[25];
     bson_oid_to_string(&id, oid_str);
-    printf("   OK - _id: %s\n", oid_str);
-
-    printf("4. Testing $set only...\n");
     {
         bson_t *filter = bson_new();
         BSON_APPEND_OID(filter, "_id", &id);
@@ -77,12 +67,8 @@ int main(void) {
 
         if (rc < 0) {
             printf("FAILED: %s\n", error.message);
-        } else {
-            printf("   OK\n");
-        }
+        } 
     }
-
-    printf("5. Testing $inc only...\n");
     {
         bson_t *filter = bson_new();
         BSON_APPEND_OID(filter, "_id", &id);
@@ -99,12 +85,9 @@ int main(void) {
 
         if (rc < 0) {
             printf("FAILED: %s\n", error.message);
-        } else {
-            printf("   OK\n");
         }
     }
 
-    printf("6. Verifying document before combined update...\n");
     {
         bson_t *filter = bson_new();
         BSON_APPEND_OID(filter, "_id", &id);
@@ -122,7 +105,6 @@ int main(void) {
         }
     }
 
-    printf("7. Testing $set + $inc combined...\n");
     {
         bson_t *filter = bson_new();
         BSON_APPEND_OID(filter, "_id", &id);
@@ -143,21 +125,15 @@ int main(void) {
         BSON_APPEND_DOUBLE(&inc_doc, "score", 0.5);
         bson_append_document_end(update, &inc_doc);
 
-        printf("   Calling mongolite_update_one...\n");
         rc = mongolite_update_one(db, "test", filter, update, false, &error);
-        printf("   Returned: %d\n", rc);
 
         bson_destroy(filter);
         bson_destroy(update);
 
         if (rc < 0) {
             printf("FAILED: %s\n", error.message);
-        } else {
-            printf("   OK\n");
         }
     }
-
-    printf("8. Verifying final document...\n");
     {
         bson_t *filter = bson_new();
         BSON_APPEND_OID(filter, "_id", &id);
@@ -175,7 +151,6 @@ int main(void) {
         }
     }
 
-    printf("9. Loop test: repeated $set + $inc (10 iterations)...\n");
     for (int i = 0; i < 10; i++) {
         bson_t *filter = bson_new();
         BSON_APPEND_OID(filter, "_id", &id);
@@ -200,10 +175,7 @@ int main(void) {
             printf("   FAILED at iteration %d: %s\n", i, error.message);
             break;
         }
-        printf("   Iteration %d OK\n", i);
     }
-
-    printf("\n10. Stress test: 2000 iterations of $set + $inc...\n");
     for (int i = 0; i < 2000; i++) {
         bson_t *filter = bson_new();
         BSON_APPEND_OID(filter, "_id", &id);
@@ -230,16 +202,9 @@ int main(void) {
             printf("   FAILED at iteration %d: %s\n", i, error.message);
             break;
         }
-        if (i % 500 == 0) {
-            printf("   Iteration %d OK\n", i);
-        }
+        
     }
-    printf("   Stress test complete\n");
-
-    printf("\n11. Closing database...\n");
     mongolite_close(db);
     cleanup();
-
-    printf("\n=== All debug tests completed ===\n");
     return 0;
 }

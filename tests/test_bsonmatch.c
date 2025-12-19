@@ -243,6 +243,9 @@ TEST(matcher_nested_field) {
  * MAIN
  * ============================================================ */
 
+/* Cleanup function - declared in bsoncompare.h */
+extern int regex_destroy(void);
+
 TEST_SUITE_BEGIN("bsonmatch tests")
 
     RUN_TEST(test_matcher_create_destroy);
@@ -257,5 +260,8 @@ TEST_SUITE_BEGIN("bsonmatch tests")
     /* Tests using compare() with JSON-style $regex */
     RUN_TEST(test_compare_regex_json_style);
     RUN_TEST(test_compare_regex_case_insensitive);
+
+    /* Cleanup global regex cache to avoid memory leak */
+    regex_destroy();
 
 TEST_SUITE_END()

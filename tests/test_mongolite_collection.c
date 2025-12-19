@@ -49,7 +49,10 @@ static int test_collection_create(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed: %s", error.message);
 
     /* Create a simple collection */
@@ -79,7 +82,9 @@ static int test_collection_create_with_config(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t dbconfig = {0};
+    dbconfig.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &dbconfig, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     /* Create with custom metadata */
@@ -119,7 +124,9 @@ static int test_collection_drop(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     /* Create collection */
@@ -153,7 +160,9 @@ static int test_collection_list(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     /* Empty database should have no collections */
@@ -198,7 +207,9 @@ static int test_collection_exists(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     /* Non-existent */
@@ -226,7 +237,9 @@ static int test_collection_count_empty(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "empty", NULL, &error);
@@ -251,7 +264,9 @@ static int test_collection_metadata(void) {
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
 
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "open should succeed");
 
     rc = mongolite_collection_create(db, "meta_test", NULL, &error);
@@ -295,7 +310,9 @@ static int test_collection_persistence(void) {
     gerror_t error = {0};
 
     /* First session: create collections */
-    int rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;  /* 32MB */
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "first open should succeed");
 
     rc = mongolite_collection_create(db, "persistent1", NULL, &error);
@@ -308,7 +325,7 @@ static int test_collection_persistence(void) {
 
     /* Second session: verify persistence */
     db = NULL;
-    rc = mongolite_open(TEST_DB_PATH, &db, NULL, &error);
+    rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     TEST_ASSERT(rc == 0, "reopen should succeed: %s", error.message);
 
     TEST_ASSERT(mongolite_collection_exists(db, "persistent1", NULL),
