@@ -18,6 +18,11 @@ else()
     add_compile_options(-Wall -Wextra -fPIC)
 endif()
 
+# Build type handling
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+endif()
+
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     if (MSVC)
         add_compile_options(/Zi /Od)
@@ -25,8 +30,14 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         add_compile_options(-g -O0)
     endif()
 else()
-    if (NOT MSVC)
-        add_compile_options(-O2)
+    # Release / RelWithDebInfo
+    add_compile_definitions(NDEBUG)  # Required for Google Benchmark to detect release mode
+    if (MSVC)
+        add_compile_options(/O2 /GL)  # GL = Link-time code generation
+    else()
+            # add_compile_options(-O3 -march=native -flto)
+        # add_link_options(-flto)
+        add_compile_options(-O3)
     endif()
 endif()
 
@@ -116,6 +127,7 @@ add_dependencies(libbson mongoc_project)
 add_library(bson STATIC IMPORTED)
 set_target_properties(bson PROPERTIES
     IMPORTED_LOCATION ${LOCAL_LIBBSON_LIB}
+    # INTERPROCEDURAL_OPTIMIZATION OFF
 )
 
 include_directories(

@@ -427,9 +427,32 @@ int wtree_txn_commit(wtree_txn_t *txn, gerror_t *error) {
 
 void wtree_txn_abort(wtree_txn_t *txn) {
     if (!txn) return;
-    
+
     mdb_txn_abort(txn->txn);
     free(txn);
+}
+
+void wtree_txn_reset(wtree_txn_t *txn) {
+    if (!txn || txn->is_write) return;  // Only valid for read-only txn
+    mdb_txn_reset(txn->txn);
+}
+
+int wtree_txn_renew(wtree_txn_t *txn, gerror_t *error) {
+    if (!txn) {
+        set_error(error, WTREE_LIB, EINVAL, "Transaction is NULL");
+        return -1;
+    }
+    if (txn->is_write) {
+        set_error(error, WTREE_LIB, EINVAL, "Cannot renew write transaction");
+        return -1;
+    }
+
+    int rc = mdb_txn_renew(txn->txn);
+    if (rc != 0) {
+        set_error(error, WTREE_LIB, rc, "mdb_txn_renew failed: %s", mdb_strerror(rc));
+        return -1;
+    }
+    return 0;
 }
 
 bool wtree_txn_is_readonly(wtree_txn_t *txn) {

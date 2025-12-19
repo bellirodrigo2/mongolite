@@ -130,9 +130,7 @@ static int _apply_inc(bson_t *doc, bson_iter_t *inc_iter, gerror_t *error) {
     }
 
     bson_t tmp;
-    bson_init(&tmp);
-
-    /* Copy existing document */
+    /* bson_copy_to initializes dst, so don't call bson_init first */
     bson_copy_to(doc, &tmp);
 
     while (bson_iter_next(&field_iter)) {
@@ -221,7 +219,7 @@ static int _apply_push(bson_t *doc, bson_iter_t *push_iter, gerror_t *error) {
     }
 
     bson_t tmp;
-    bson_init(&tmp);
+    /* bson_copy_to initializes dst, so don't call bson_init first */
     bson_copy_to(doc, &tmp);
 
     while (bson_iter_next(&field_iter)) {
@@ -290,7 +288,7 @@ static int _apply_pull(bson_t *doc, bson_iter_t *pull_iter, gerror_t *error) {
     }
 
     bson_t tmp;
-    bson_init(&tmp);
+    /* bson_copy_to initializes dst, so don't call bson_init first */
     bson_copy_to(doc, &tmp);
 
     while (bson_iter_next(&field_iter)) {
@@ -357,7 +355,7 @@ static int _apply_rename(bson_t *doc, bson_iter_t *rename_iter, gerror_t *error)
     }
 
     bson_t tmp;
-    bson_init(&tmp);
+    /* bson_copy_to initializes dst, so don't call bson_init first */
     bson_copy_to(doc, &tmp);
 
     while (bson_iter_next(&field_iter)) {
@@ -374,14 +372,16 @@ static int _apply_rename(bson_t *doc, bson_iter_t *rename_iter, gerror_t *error)
         /* Find old field */
         bson_iter_t doc_field;
         if (bson_iter_init_find(&doc_field, &tmp, old_name)) {
-            /* Remove old field */
+            /* Create new document without the old field */
             bson_t tmp2;
             bson_init(&tmp2);
             bson_copy_to_excluding_noinit(&tmp, &tmp2, old_name, NULL);
-            bson_destroy(&tmp);
 
-            /* Add with new name */
+            /* Add value with new name BEFORE destroying tmp (doc_field points into tmp) */
             bson_append_iter(&tmp2, new_name, -1, &doc_field);
+
+            /* Now safe to destroy tmp */
+            bson_destroy(&tmp);
             tmp = tmp2;
         }
     }

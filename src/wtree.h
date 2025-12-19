@@ -87,6 +87,14 @@ int wtree_txn_commit(wtree_txn_t *txn, gerror_t *error);
 // Abort transaction
 void wtree_txn_abort(wtree_txn_t *txn);
 
+// Reset read-only transaction (release snapshot but keep handle for reuse)
+// Only valid for read-only transactions. After reset, must call renew before use.
+void wtree_txn_reset(wtree_txn_t *txn);
+
+// Renew a reset read-only transaction (acquire new snapshot)
+// Much faster than creating a new transaction.
+int wtree_txn_renew(wtree_txn_t *txn, gerror_t *error);
+
 // Check if transaction is read-only
 bool wtree_txn_is_readonly(wtree_txn_t *txn);
 
