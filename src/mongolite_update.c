@@ -542,8 +542,22 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Find the first matching document */
-    bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
+    /* OPTIMIZATION: Check for direct _id lookup */
+    bson_oid_t oid;
+    bson_t *existing = NULL;
+
+    if (_mongolite_is_id_query(filter, &oid)) {
+        /* Fast path: direct _id lookup */
+        _mongolite_lock(db);
+        wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+        if (tree) {
+            existing = _mongolite_find_by_id(db, tree, &oid, error);
+        }
+        _mongolite_unlock(db);
+    } else {
+        /* Slow path: full scan */
+        existing = mongolite_find_one(db, collection, filter, NULL, error);
+    }
 
     if (!existing) {
         /* No match found */

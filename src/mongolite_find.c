@@ -24,7 +24,7 @@
  * ============================================================ */
 
 MONGOLITE_HOT
-static bool _is_id_query(const bson_t *filter, bson_oid_t *out_oid) {
+bool _mongolite_is_id_query(const bson_t *filter, bson_oid_t *out_oid) {
     if (MONGOLITE_UNLIKELY(!filter || bson_empty(filter))) {
         return false;
     }
@@ -59,8 +59,8 @@ static bool _is_id_query(const bson_t *filter, bson_oid_t *out_oid) {
  * ============================================================ */
 
 MONGOLITE_HOT
-static bson_t* _find_by_id(mongolite_db_t *db, wtree_tree_t *tree,
-                           const bson_oid_t *oid, gerror_t *error) {
+bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree_tree_t *tree,
+                               const bson_oid_t *oid, gerror_t *error) {
     wtree_txn_t *txn = _mongolite_get_read_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) return NULL;
 
@@ -176,8 +176,8 @@ bson_t* mongolite_find_one(mongolite_db_t *db, const char *collection,
 
     /* Optimize: direct _id lookup */
     bson_oid_t oid;
-    if (_is_id_query(filter, &oid)) {
-        result = _find_by_id(db, tree, &oid, error);
+    if (_mongolite_is_id_query(filter, &oid)) {
+        result = _mongolite_find_by_id(db, tree, &oid, error);
     } else {
         /* Full scan with filter */
         result = _find_one_scan(db, tree, filter, error);

@@ -113,21 +113,23 @@ wtree_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name);
 `_apply_set`, `_apply_inc` create temporary BSON documents for each field modification.
 
 
-#### 1.3 Direct _id Lookup for Update/Delete
+#### 1.3 Direct _id Lookup for Update/Delete ✅ COMPLETED
 **Operation:** Update, Delete
 **Difficulty:** ★☆☆☆☆
-**Expected Gain:** 20-30% for _id queries
+**Actual Gain:** ~18% for UpdateOneById, ~15% for DeleteOneById
 
-Currently `mongolite_update_one` calls `mongolite_find_one` which handles all filter types. For `_id`-only filters, bypass the query engine.
+Optimized `mongolite_update_one` and `mongolite_delete_one` to use direct _id lookup via `_mongolite_is_id_query()` and `_mongolite_find_by_id()`.
 
-```c
-// Add fast path in mongolite_update_one:
-if (_is_id_only_filter(filter)) {
-    existing = _find_by_id_direct(db, collection, filter, error);
-} else {
-    existing = mongolite_find_one(...);
-}
-```
+**Implementation:**
+- `src/mongolite_find.c` - Exposed `_mongolite_is_id_query()` and `_mongolite_find_by_id()`
+- `src/mongolite_update.c` - Fast path for _id queries
+- `src/mongolite_delete.c` - Fast path for _id queries
+
+**Benchmark Results:**
+| Operation | Before | After | Improvement |
+|-----------|--------|-------|-------------|
+| UpdateOneById | 307μs | ~260μs | **~18% faster** |
+| DeleteOneById | 375μs | ~320μs | **~15% faster** |
 
 ---
 

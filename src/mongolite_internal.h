@@ -254,6 +254,11 @@ int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
                                      const char *collection, int64_t delta,
                                      gerror_t *error);
 
+/* Query optimization helpers */
+bool _mongolite_is_id_query(const bson_t *filter, bson_oid_t *out_oid);
+bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree_tree_t *tree,
+                               const bson_oid_t *oid, gerror_t *error);
+
 /* ============================================================
  * Internal Collection Operations
  * ============================================================ */

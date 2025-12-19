@@ -23,26 +23,49 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Find the first matching document */
-    bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
-    if (!existing) {
-        /* No match found - not an error */
-        return 0;
-    }
-
-    /* Extract _id */
-    bson_iter_t id_iter;
-    if (!bson_iter_init_find(&id_iter, existing, "_id")) {
-        bson_destroy(existing);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR, "Document missing _id");
-        return -1;
-    }
+    /* OPTIMIZATION: Check for direct _id lookup */
     bson_oid_t doc_id;
-    bson_oid_copy(bson_iter_oid(&id_iter), &doc_id);
-    bson_destroy(existing);
+    bool found_by_id = false;
 
-    /* Lock database */
-    _mongolite_lock(db);
+    if (_mongolite_is_id_query(filter, &doc_id)) {
+        /* Fast path: we already have the _id, just verify it exists */
+        _mongolite_lock(db);
+        wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+        if (tree) {
+            bson_t *existing = _mongolite_find_by_id(db, tree, &doc_id, error);
+            if (existing) {
+                bson_destroy(existing);
+                found_by_id = true;
+            }
+        }
+        /* Keep lock for delete operation below */
+    } else {
+        /* Slow path: full scan to find document */
+        bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
+        if (!existing) {
+            /* No match found - not an error */
+            return 0;
+        }
+
+        /* Extract _id */
+        bson_iter_t id_iter;
+        if (!bson_iter_init_find(&id_iter, existing, "_id")) {
+            bson_destroy(existing);
+            set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR, "Document missing _id");
+            return -1;
+        }
+        bson_oid_copy(bson_iter_oid(&id_iter), &doc_id);
+        bson_destroy(existing);
+
+        /* Lock database for delete */
+        _mongolite_lock(db);
+    }
+
+    /* If fast path didn't find document, unlock and return */
+    if (_mongolite_is_id_query(filter, NULL) && !found_by_id) {
+        _mongolite_unlock(db);
+        return 0;  /* No match found - not an error */
+    }
 
     /* Get collection tree */
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
