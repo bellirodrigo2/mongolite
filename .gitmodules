@@ -7,3 +7,4 @@
 [submodule "external/bsonmatch"]
 	path = external/bsonmatch
 	url = https://github.com/bellirodrigo2/bsonmatch.git
+	branch = main
