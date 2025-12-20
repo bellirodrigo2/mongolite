@@ -4,6 +4,8 @@
  * Provides pure functions for applying MongoDB-style update operators
  * to BSON documents. All functions return new documents (caller must free).
  *
+ * Uses single-pass O(n) document rebuilding for optimal performance.
+ *
  * Supported operators:
  * - $set    - Set field values
  * - $unset  - Remove fields

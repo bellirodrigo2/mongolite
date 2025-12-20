@@ -9,6 +9,7 @@
  */
 
 #include "mongolite_internal.h"
+#include "macros.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -23,15 +24,16 @@
  *          Caller must check if returned doc != input doc and destroy if so.
  * ============================================================ */
 
+MONGOLITE_HOT
 static bson_t* _ensure_id(const bson_t *doc, bson_oid_t *out_id, bool *was_generated) {
     bson_iter_t iter;
 
     *was_generated = false;
 
     /* Check if _id exists */
-    if (bson_iter_init_find(&iter, doc, "_id")) {
+    if (MONGOLITE_LIKELY(bson_iter_init_find(&iter, doc, "_id"))) {
         /* Extract existing _id */
-        if (BSON_ITER_HOLDS_OID(&iter)) {
+        if (MONGOLITE_LIKELY(BSON_ITER_HOLDS_OID(&iter))) {
             bson_oid_copy(bson_iter_oid(&iter), out_id);
         } else {
             /* Non-OID _id - generate a hash or use as-is */
@@ -46,7 +48,7 @@ static bson_t* _ensure_id(const bson_t *doc, bson_oid_t *out_id, bool *was_gener
     bson_oid_init(out_id, NULL);
 
     bson_t *new_doc = bson_new();
-    if (!new_doc) return NULL;
+    if (MONGOLITE_UNLIKELY(!new_doc)) return NULL;
 
     /* Prepend _id */
     BSON_APPEND_OID(new_doc, "_id", out_id);
@@ -65,10 +67,11 @@ static bson_t* _ensure_id(const bson_t *doc, bson_oid_t *out_id, bool *was_gener
  * Insert One
  * ============================================================ */
 
+MONGOLITE_HOT
 int mongolite_insert_one(mongolite_db_t *db, const char *collection,
                           const bson_t *doc, bson_oid_t *inserted_id,
                           gerror_t *error) {
-    if (!db || !collection || !doc) {
+    if (MONGOLITE_UNLIKELY(!db || !collection || !doc)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
                  "Database, collection, and document are required");
         return MONGOLITE_EINVAL;
@@ -78,7 +81,7 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
 
     /* Get collection tree */
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-    if (!tree) {
+    if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         /* Error already set by _mongolite_get_collection_tree */
         /* Return generic error - check gerror for details */
@@ -89,7 +92,7 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
     bson_oid_t oid;
     bool id_generated = false;
     bson_t *final_doc = _ensure_id(doc, &oid, &id_generated);
-    if (!final_doc) {
+    if (MONGOLITE_UNLIKELY(!final_doc)) {
         _mongolite_unlock(db);
         set_error(error, "system", MONGOLITE_ENOMEM,
                  "Failed to prepare document");
@@ -98,7 +101,7 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
 
     /* Begin transaction */
     wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (!txn) {
+    if (MONGOLITE_UNLIKELY(!txn)) {
         if (id_generated) bson_destroy(final_doc);
         _mongolite_unlock(db);
         return MONGOLITE_ERROR;
@@ -110,7 +113,7 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
                                    bson_get_data(final_doc), final_doc->len,
                                    error);
 
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_abort_if_auto(db, txn);
         if (id_generated) bson_destroy(final_doc);
         _mongolite_unlock(db);
@@ -119,7 +122,7 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
 
     /* Update doc count within the same transaction for atomicity */
     rc = _mongolite_update_doc_count_txn(db, txn, collection, 1, error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_abort_if_auto(db, txn);
         if (id_generated) bson_destroy(final_doc);
         _mongolite_unlock(db);
@@ -128,7 +131,7 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
 
     /* Commit */
     rc = _mongolite_commit_if_auto(db, txn, error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         if (id_generated) bson_destroy(final_doc);
         _mongolite_unlock(db);
         return rc;
@@ -153,10 +156,11 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
  * Insert Many
  * ============================================================ */
 
+MONGOLITE_HOT
 int mongolite_insert_many(mongolite_db_t *db, const char *collection,
                            const bson_t **docs, size_t n_docs,
                            bson_oid_t **inserted_ids, gerror_t *error) {
-    if (!db || !collection || !docs || n_docs == 0) {
+    if (MONGOLITE_UNLIKELY(!db || !collection || !docs || n_docs == 0)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
                  "Database, collection, and documents are required");
         return MONGOLITE_EINVAL;
@@ -166,7 +170,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 
     /* Get collection tree */
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-    if (!tree) {
+    if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         /* Error already set by _mongolite_get_collection_tree */
         /* Return generic error - check gerror for details */
@@ -177,7 +181,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
     bson_oid_t *oids = NULL;
     if (inserted_ids) {
         oids = calloc(n_docs, sizeof(bson_oid_t));
-        if (!oids) {
+        if (MONGOLITE_UNLIKELY(!oids)) {
             _mongolite_unlock(db);
             set_error(error, "system", MONGOLITE_ENOMEM,
                      "Failed to allocate OID array");
@@ -187,7 +191,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 
     /* Begin transaction */
     wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (!txn) {
+    if (MONGOLITE_UNLIKELY(!txn)) {
         free(oids);
         _mongolite_unlock(db);
         return MONGOLITE_ERROR;
@@ -195,7 +199,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 
     /* Track documents that need cleanup */
     bson_t **generated_docs = calloc(n_docs, sizeof(bson_t*));
-    if (!generated_docs) {
+    if (MONGOLITE_UNLIKELY(!generated_docs)) {
         _mongolite_abort_if_auto(db, txn);
         free(oids);
         _mongolite_unlock(db);
@@ -208,13 +212,13 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
     int rc = MONGOLITE_OK;
 
     for (size_t i = 0; i < n_docs; i++) {
-        if (!docs[i]) continue;
+        if (MONGOLITE_UNLIKELY(!docs[i])) continue;
 
         bson_oid_t oid;
         bool id_generated = false;
         bson_t *final_doc = _ensure_id(docs[i], &oid, &id_generated);
 
-        if (!final_doc) {
+        if (MONGOLITE_UNLIKELY(!final_doc)) {
             rc = MONGOLITE_ENOMEM;
             set_error(error, "system", MONGOLITE_ENOMEM,
                      "Failed to prepare document %zu", i);
@@ -230,7 +234,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
                                    bson_get_data(final_doc), final_doc->len,
                                    error);
 
-        if (rc != 0) {
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
             break;
         }
 
@@ -249,7 +253,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
     }
     free(generated_docs);
 
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_abort_if_auto(db, txn);
         free(oids);
         _mongolite_unlock(db);
@@ -258,7 +262,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 
     /* Update doc count within the same transaction for atomicity */
     rc = _mongolite_update_doc_count_txn(db, txn, collection, (int64_t)inserted, error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_abort_if_auto(db, txn);
         free(oids);
         _mongolite_unlock(db);
@@ -267,7 +271,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 
     /* Commit */
     rc = _mongolite_commit_if_auto(db, txn, error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         free(oids);
         _mongolite_unlock(db);
         return rc;
@@ -294,7 +298,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 int mongolite_insert_one_json(mongolite_db_t *db, const char *collection,
                                const char *json_str, bson_oid_t *inserted_id,
                                gerror_t *error) {
-    if (!db || !collection || !json_str) {
+    if (MONGOLITE_UNLIKELY(!db || !collection || !json_str)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
                  "Database, collection, and JSON string are required");
         return MONGOLITE_EINVAL;
@@ -302,7 +306,7 @@ int mongolite_insert_one_json(mongolite_db_t *db, const char *collection,
 
     bson_error_t bson_err;
     bson_t *doc = bson_new_from_json((const uint8_t*)json_str, -1, &bson_err);
-    if (!doc) {
+    if (MONGOLITE_UNLIKELY(!doc)) {
         set_error(error, "libbson", MONGOLITE_EINVAL,
                  "Invalid JSON: %s", bson_err.message);
         return MONGOLITE_EINVAL;
@@ -321,7 +325,7 @@ int mongolite_insert_one_json(mongolite_db_t *db, const char *collection,
 int mongolite_insert_many_json(mongolite_db_t *db, const char *collection,
                                 const char **json_strs, size_t n_docs,
                                 bson_oid_t **inserted_ids, gerror_t *error) {
-    if (!db || !collection || !json_strs || n_docs == 0) {
+    if (MONGOLITE_UNLIKELY(!db || !collection || !json_strs || n_docs == 0)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
                  "Database, collection, and JSON strings are required");
         return MONGOLITE_EINVAL;
@@ -329,7 +333,7 @@ int mongolite_insert_many_json(mongolite_db_t *db, const char *collection,
 
     /* Parse all JSON strings */
     bson_t **docs = calloc(n_docs, sizeof(bson_t*));
-    if (!docs) {
+    if (MONGOLITE_UNLIKELY(!docs)) {
         set_error(error, "system", MONGOLITE_ENOMEM,
                  "Failed to allocate document array");
         return MONGOLITE_ENOMEM;
@@ -339,10 +343,10 @@ int mongolite_insert_many_json(mongolite_db_t *db, const char *collection,
     int rc = MONGOLITE_OK;
 
     for (size_t i = 0; i < n_docs; i++) {
-        if (!json_strs[i]) continue;
+        if (MONGOLITE_UNLIKELY(!json_strs[i])) continue;
 
         docs[i] = bson_new_from_json((const uint8_t*)json_strs[i], -1, &bson_err);
-        if (!docs[i]) {
+        if (MONGOLITE_UNLIKELY(!docs[i])) {
             set_error(error, "libbson", MONGOLITE_EINVAL,
                      "Invalid JSON at index %zu: %s", i, bson_err.message);
             rc = MONGOLITE_EINVAL;

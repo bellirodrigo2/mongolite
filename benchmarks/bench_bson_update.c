@@ -292,6 +292,38 @@ static void bench_set_on_large_doc(size_t iterations, int num_fields) {
     bson_destroy(doc);
 }
 
+static void bench_set_multiple_on_large_doc(size_t iterations, int num_fields, int num_update_fields) {
+    bson_t *doc = create_large_doc(num_fields);
+
+    /* Build update with multiple fields */
+    bson_t *update = bson_new();
+    bson_t set_doc;
+    bson_append_document_begin(update, "$set", -1, &set_doc);
+    for (int i = 0; i < num_update_fields; i++) {
+        char key[32];
+        snprintf(key, sizeof(key), "field_%d", i);
+        BSON_APPEND_INT32(&set_doc, key, 999);
+    }
+    bson_append_document_end(update, &set_doc);
+
+    double start = get_time_ns();
+
+    for (size_t i = 0; i < iterations; i++) {
+        bson_t *result = bson_update_apply(doc, update, NULL);
+        bson_destroy(result);
+    }
+
+    double end = get_time_ns();
+
+    char name[64];
+    snprintf(name, sizeof(name), "$set %d/%d fields", num_update_fields, num_fields);
+    bench_result_t r = {name, end - start, iterations, 1};
+    print_result(&r);
+
+    bson_destroy(update);
+    bson_destroy(doc);
+}
+
 /* ============================================================
  * Main
  * ============================================================ */
@@ -303,8 +335,8 @@ int main(int argc, char *argv[]) {
         iterations = atoi(argv[1]);
     }
 
-    printf("BSON Update Operator Benchmarks\n");
-    printf("================================\n");
+    printf("BSON Update Operator Benchmarks (Optimized O(n) Implementation)\n");
+    printf("================================================================\n");
     printf("Iterations: %zu\n\n", iterations);
 
     printf("%-30s %12s  %12s\n", "Operation", "Throughput", "Latency");
@@ -324,6 +356,11 @@ int main(int argc, char *argv[]) {
     bench_set_on_large_doc(iterations, 20);
     bench_set_on_large_doc(iterations, 50);
     bench_set_on_large_doc(iterations, 100);
+
+    printf("\nMulti-field $set Scaling:\n");
+    bench_set_multiple_on_large_doc(iterations, 50, 5);
+    bench_set_multiple_on_large_doc(iterations, 50, 10);
+    bench_set_multiple_on_large_doc(iterations, 100, 10);
 
     return 0;
 }

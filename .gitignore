@@ -55,6 +55,7 @@ CTestTestfile.cmake
 _deps
 *.cmake
 !cmake/*.cmake
+cmake/
 
 # Make
 .depend

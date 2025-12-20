@@ -1,88 +1,53 @@
 cmake_minimum_required(VERSION 3.16)
-project(wtree C)
+project(mongolite C)
 
 include(ExternalProject)
 
-# =========================
-# Language
-# =========================
+# ============================================================
+# Language & Standards
+# ============================================================
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-# =========================
-# Portable Flags
-# =========================
-if (MSVC)
-    add_compile_options(/W4)
-else()
-    add_compile_options(-Wall -Wextra -fPIC)
-endif()
+# ============================================================
+# Build Type (default to Release)
+# ============================================================
 
-# Build type handling
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    if (MSVC)
-        add_compile_options(/Zi /Od)
-    else()
-        add_compile_options(-g -O0)
-    endif()
-else()
-    # Release / RelWithDebInfo
-    add_compile_definitions(NDEBUG)  # Required for Google Benchmark to detect release mode
-    if (MSVC)
-        add_compile_options(/O2 /GL)  # GL = Link-time code generation
-    else()
-        # add_compile_options(-O3 -march=native -flto)
-        # add_link_options(-flto)
-    endif()
-endif()
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "RelWithDebInfo")
 
-if (WIN32)
-    set(SYSTEM_NETWORK_LIBS ws2_32)
-else()
-    set(SYSTEM_NETWORK_LIBS)
-endif()
+# ============================================================
+# Include Compiler Flags
+# ============================================================
 
-if (MINGW)
-    add_compile_definitions(__USE_MINGW_ANSI_STDIO=1)
-endif()
+include(${CMAKE_SOURCE_DIR}/cmake/CompilerFlags.cmake)
 
-# =========================
-# Directories
-# =========================
+# ============================================================
+# Directory Setup
+# ============================================================
+
 set(SRC_DIR  ${CMAKE_SOURCE_DIR}/src)
 set(TEST_DIR ${CMAKE_SOURCE_DIR}/tests)
 set(BIN_DIR  ${CMAKE_BINARY_DIR}/bin)
 
 file(MAKE_DIRECTORY ${BIN_DIR})
 
-include_directories(
-    ${SRC_DIR}
-)
+include_directories(${SRC_DIR})
 
 # ============================================================
-# ========================= LMDB (sources for wtree) ==========
+# LMDB (embedded in wtree/mongolite)
 # ============================================================
 
 set(LMDB_DIR ${CMAKE_SOURCE_DIR}/external/lmdb/libraries/liblmdb)
 
-# LMDB sources - will be compiled into libwtree.a
-set(LMDB_SOURCES
-    ${LMDB_DIR}/mdb.c
-    ${LMDB_DIR}/midl.c
-)
-
-include_directories(
-    ${SRC_DIR}
-    ${LMDB_DIR}
-)
-
+include_directories(${LMDB_DIR})
 
 # ============================================================
-# ========================= LIBBSON ===========================
+# LIBBSON (External Project)
 # ============================================================
 
 set(MONGOC_DIR ${CMAKE_SOURCE_DIR}/external/mongoc)
@@ -110,14 +75,14 @@ ExternalProject_Add(mongoc_project
     INSTALL_COMMAND ${CMAKE_COMMAND} --build . --target install
 )
 
-# Copiar SOMENTE o .a para /build
+# Copy static lib to build/
 add_custom_command(
     OUTPUT ${LOCAL_LIBBSON_LIB}
     COMMAND ${CMAKE_COMMAND} -E copy
             ${LIBBSON_BUILD_LIB}
             ${LOCAL_LIBBSON_LIB}
     DEPENDS mongoc_project
-    COMMENT "=== Copying ONLY static libbson to build/ ==="
+    COMMENT "Copying static libbson to build/"
 )
 
 add_custom_target(libbson ALL DEPENDS ${LOCAL_LIBBSON_LIB})
@@ -126,15 +91,12 @@ add_dependencies(libbson mongoc_project)
 add_library(bson STATIC IMPORTED)
 set_target_properties(bson PROPERTIES
     IMPORTED_LOCATION ${LOCAL_LIBBSON_LIB}
-    # INTERPROCEDURAL_OPTIMIZATION OFF
 )
 
-include_directories(
-    ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
-)
+include_directories(${MONGOC_INSTALL_DIR}/include/bson-2.3.0)
 
 # ============================================================
-# ========================= PCRE2 (for bsonmatch) =============
+# PCRE2 (for bsonmatch)
 # ============================================================
 
 set(BSONMATCH_DIR ${CMAKE_SOURCE_DIR}/external/bsonmatch)
@@ -155,13 +117,13 @@ add_subdirectory(${PCRE2_DIR} ${CMAKE_BINARY_DIR}/pcre2-build)
 set(PCRE2_INCLUDE_DIR ${CMAKE_BINARY_DIR}/pcre2-build)
 
 # ============================================================
-# ========================= BSONMATCH =========================
+# BSONMATCH
 # ============================================================
 
 # UTHASH (from mongoc)
 set(UTHASH_DIR ${CMAKE_SOURCE_DIR}/external/mongoc/src/uthash/uthash-2.3.0)
 
-# bsonmatch sources (includes wregex.c - no separate lib)
+# bsonmatch sources
 set(BSONMATCH_SOURCES
     ${BSONMATCH_DIR}/src/wregex.c
     ${BSONMATCH_DIR}/src/bsoncompare.c
@@ -211,211 +173,24 @@ if(WIN32)
 endif()
 
 # ============================================================
-# ========================= WTREE (includes LMDB) =============
+# Source Libraries (wtree, mongolite)
 # ============================================================
 
-# wtree sources (includes LMDB - no separate lib)
-set(WTREE_SOURCES
-    ${SRC_DIR}/wtree.c
-    ${LMDB_SOURCES}
-)
-
-add_library(wtree STATIC ${WTREE_SOURCES})
+add_subdirectory(src)
 
 # ============================================================
-# ========================= MONGOLITE =========================
+# Tests
 # ============================================================
 
-# mongolite sources (includes wtree + all mongolite modules)
-set(MONGOLITE_SOURCES
-    ${SRC_DIR}/gerror.c
-    ${SRC_DIR}/wtree.c
-    ${SRC_DIR}/mongolite_db.c
-    ${SRC_DIR}/mongolite_util.c
-    ${SRC_DIR}/mongolite_schema.c
-    ${SRC_DIR}/mongolite_txn.c
-    ${SRC_DIR}/mongolite_collection.c
-    ${SRC_DIR}/mongolite_insert.c
-    ${SRC_DIR}/mongolite_find.c
-    ${SRC_DIR}/mongolite_cursor.c
-    ${SRC_DIR}/bson_update.c
-    ${SRC_DIR}/mongolite_update.c
-    ${SRC_DIR}/mongolite_delete.c
-    ${SRC_DIR}/key_compare.c
-    ${LMDB_SOURCES}
-)
+option(BUILD_TESTS "Build tests" ON)
 
-add_library(mongolite STATIC ${MONGOLITE_SOURCES})
-add_dependencies(mongolite libbson bsonmatch)
-
-target_include_directories(mongolite PUBLIC
-    ${SRC_DIR}
-    ${LMDB_DIR}
-    ${BSONMATCH_DIR}/src
-    ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
-)
-
-target_link_libraries(mongolite PUBLIC
-    bsonmatch
-    ${LOCAL_LIBBSON_LIB}
-    ${SYSTEM_NETWORK_LIBS}
-)
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # ============================================================
-# ========================= TESTS ============================
-# ============================================================
-
-enable_testing()
-
-# --- test para gerror (original)
-
-add_executable(test_gerror
-    ${TEST_DIR}/test_gerror.c
-    ${SRC_DIR}/gerror.c
-)
-add_test(NAME test_gerror COMMAND test_gerror)
-
-# --- test para wtree (uses WTREE_SOURCES directly)
-
-add_executable(test_wtree
-    ${TEST_DIR}/test_wtree.c
-    ${WTREE_SOURCES}
-    ${SRC_DIR}/gerror.c
-)
-add_test(NAME test_wtree COMMAND test_wtree)
-
-add_executable(test_wtree_iter
-    ${TEST_DIR}/test_wtree_iter.c
-    ${WTREE_SOURCES}
-    ${SRC_DIR}/gerror.c
-)
-add_test(NAME test_wtree_iter COMMAND test_wtree_iter)
-
-# --- test para key_compare
-
-add_executable(test_key_compare
-    ${TEST_DIR}/test_key_compare.c
-    ${SRC_DIR}/key_compare.c
-)
-add_dependencies(test_key_compare libbson)
-target_link_libraries(test_key_compare PRIVATE ${LOCAL_LIBBSON_LIB}
-    ${SYSTEM_NETWORK_LIBS})
-add_test(NAME test_key_compare COMMAND test_key_compare)
-
-# --- test para bsonmatch
-
-add_executable(test_bsonmatch
-    ${TEST_DIR}/test_bsonmatch.c
-)
-add_dependencies(test_bsonmatch bsonmatch)
-target_link_libraries(test_bsonmatch PRIVATE bsonmatch m)
-add_test(NAME test_bsonmatch COMMAND test_bsonmatch)
-
-# --- test para mongolite_db (Phase 1)
-
-add_executable(test_mongolite_db
-    ${TEST_DIR}/test_mongolite_db.c
-)
-add_dependencies(test_mongolite_db mongolite)
-target_link_libraries(test_mongolite_db PRIVATE mongolite)
-add_test(NAME test_mongolite_db COMMAND test_mongolite_db)
-
-# --- test para mongolite_collection (Phase 2)
-
-add_executable(test_mongolite_collection
-    ${TEST_DIR}/test_mongolite_collection.c
-)
-add_dependencies(test_mongolite_collection mongolite)
-target_link_libraries(test_mongolite_collection PRIVATE mongolite)
-add_test(NAME test_mongolite_collection COMMAND test_mongolite_collection)
-
-# --- test para mongolite_insert (Phase 3)
-
-add_executable(test_mongolite_insert
-    ${TEST_DIR}/test_mongolite_insert.c
-)
-add_dependencies(test_mongolite_insert mongolite)
-target_link_libraries(test_mongolite_insert PRIVATE mongolite)
-add_test(NAME test_mongolite_insert COMMAND test_mongolite_insert)
-
-# --- test para mongolite_find (Phase 4)
-
-add_executable(test_mongolite_find
-    ${TEST_DIR}/test_mongolite_find.c
-)
-add_dependencies(test_mongolite_find mongolite)
-target_link_libraries(test_mongolite_find PRIVATE mongolite)
-add_test(NAME test_mongolite_find COMMAND test_mongolite_find)
-
-# --- test para integration (full cycle)
-
-add_executable(test_mongolite_integration
-    ${TEST_DIR}/test_mongolite_integration.c
-)
-add_dependencies(test_mongolite_integration mongolite)
-target_link_libraries(test_mongolite_integration PRIVATE mongolite)
-add_test(NAME test_mongolite_integration COMMAND test_mongolite_integration)
-
-# --- test para mongolite_update (Phase 6)
-
-add_executable(test_mongolite_update
-    ${TEST_DIR}/test_mongolite_update.c
-)
-add_dependencies(test_mongolite_update mongolite)
-target_link_libraries(test_mongolite_update PRIVATE mongolite)
-add_test(NAME test_mongolite_update COMMAND test_mongolite_update)
-
-# --- test para mongolite_delete (Phase 7)
-
-add_executable(test_mongolite_delete
-    ${TEST_DIR}/test_mongolite_delete.c
-)
-add_dependencies(test_mongolite_delete mongolite)
-target_link_libraries(test_mongolite_delete PRIVATE mongolite)
-add_test(NAME test_mongolite_delete COMMAND test_mongolite_delete)
-
-# --- test para bson_update (standalone BSON update operators)
-
-add_executable(test_bson_update
-    ${TEST_DIR}/test_bson_update.c
-    ${SRC_DIR}/bson_update.c
-    ${SRC_DIR}/key_compare.c
-    ${SRC_DIR}/gerror.c
-)
-add_dependencies(test_bson_update libbson)
-target_include_directories(test_bson_update PRIVATE
-    ${SRC_DIR}
-    ${BSONMATCH_DIR}/src
-    ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
-)
-target_link_libraries(test_bson_update PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
-add_test(NAME test_bson_update COMMAND test_bson_update)
-
-    set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete test_bson_update
-        PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR}
-)
-
-
-# --- debug test for update
-add_executable(test_debug_update
-    ${TEST_DIR}/test_debug_update.c
-)
-add_dependencies(test_debug_update mongolite)
-target_link_libraries(test_debug_update PRIVATE mongolite)
-set_target_properties(test_debug_update PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
-
-# =========================
-# Target: make test
-# =========================
-
-add_custom_target(run-tests
-    COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete test_bson_update
-)
-
-# ============================================================
-# ========================= BENCHMARKS ========================
+# Benchmarks
 # ============================================================
 
 option(BUILD_BENCHMARKS "Build benchmarks" ON)
@@ -441,7 +216,6 @@ if(BUILD_BENCHMARKS)
     set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
     set(BENCHMARK_ENABLE_REGEX OFF CACHE BOOL "" FORCE)
     set(BENCHMARK_REGEX_BACKEND "none" CACHE STRING "" FORCE)
-
 
     FetchContent_MakeAvailable(googlebenchmark)
 

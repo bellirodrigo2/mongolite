@@ -3,6 +3,9 @@
  *
  * Pure functions for applying MongoDB-style update operators.
  * Extracted from mongolite_update.c for reuse and testing.
+ *
+ * Uses single-pass document rebuilding for O(n) complexity instead of
+ * O(n*m) where n = document fields and m = fields to update.
  */
 
 #include "bson_update.h"
@@ -12,6 +15,9 @@
 #include <stdio.h>
 
 #define BSON_UPDATE_LIB "bson_update"
+
+/* Maximum number of fields that can be updated in a single operator call */
+#define BSON_UPDATE_MAX_FIELDS 64
 
 /* ============================================================
  * Helper: Copy document excluding specified field
@@ -36,8 +42,16 @@ static bool _copy_except_field(bson_t *dest, const bson_t *src, const char *excl
 }
 
 /* ============================================================
- * $set operator
+ * $set operator - Single-pass O(n) implementation
  * ============================================================ */
+
+/* Field update entry for $set */
+typedef struct {
+    const char *name;
+    size_t name_len;
+    bson_iter_t value_iter;  /* Iterator pointing to the value */
+    bool used;               /* Track if field was already added */
+} bson_set_field_t;
 
 MONGOLITE_HOT MONGOLITE_WARN_UNUSED
 bson_t* bson_update_apply_set(const bson_t *doc, bson_iter_t *set_iter, gerror_t *error) {
@@ -48,50 +62,82 @@ bson_t* bson_update_apply_set(const bson_t *doc, bson_iter_t *set_iter, gerror_t
         return NULL;
     }
 
-    /* Start with a copy of the input document */
-    bson_t *result = bson_copy(doc);
+    /* Collect all fields to set */
+    bson_set_field_t fields[BSON_UPDATE_MAX_FIELDS];
+    size_t n_fields = 0;
+
+    while (bson_iter_next(&field_iter)) {
+        if (MONGOLITE_UNLIKELY(n_fields >= BSON_UPDATE_MAX_FIELDS)) {
+            set_error(error, BSON_UPDATE_LIB, -1, "$set too many fields (max %d)", BSON_UPDATE_MAX_FIELDS);
+            return NULL;
+        }
+        fields[n_fields].name = bson_iter_key(&field_iter);
+        fields[n_fields].name_len = strlen(fields[n_fields].name);
+        fields[n_fields].value_iter = field_iter;
+        fields[n_fields].used = false;
+        n_fields++;
+    }
+
+    if (n_fields == 0) {
+        /* No fields to set - return copy */
+        return bson_copy(doc);
+    }
+
+    /* Single-pass rebuild: copy doc, replacing/adding fields from update */
+    bson_t *result = bson_new();
     if (MONGOLITE_UNLIKELY(!result)) {
-        set_error(error, "system", -1, "Failed to copy document");
+        set_error(error, "system", -1, "Out of memory");
         return NULL;
     }
 
-    while (bson_iter_next(&field_iter)) {
-        const char *field_name = bson_iter_key(&field_iter);
+    bson_iter_t doc_iter;
+    if (MONGOLITE_LIKELY(bson_iter_init(&doc_iter, doc))) {
+        while (bson_iter_next(&doc_iter)) {
+            const char *key = bson_iter_key(&doc_iter);
 
-        /* Build new document: copy all fields except this one, then add new value */
-        bson_t *tmp = bson_new();
-        if (MONGOLITE_UNLIKELY(!tmp)) {
-            bson_destroy(result);
-            set_error(error, "system", -1, "Out of memory");
-            return NULL;
+            /* Check if this field is being set */
+            bool found = false;
+            for (size_t i = 0; i < n_fields; i++) {
+                if (strcmp(key, fields[i].name) == 0) {
+                    /* Use new value instead of old */
+                    if (MONGOLITE_UNLIKELY(!bson_append_iter(result, key, -1, &fields[i].value_iter))) {
+                        bson_destroy(result);
+                        set_error(error, BSON_UPDATE_LIB, -1, "Failed to append field: %s", key);
+                        return NULL;
+                    }
+                    fields[i].used = true;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                /* Keep original field */
+                if (MONGOLITE_UNLIKELY(!bson_append_iter(result, key, -1, &doc_iter))) {
+                    bson_destroy(result);
+                    set_error(error, BSON_UPDATE_LIB, -1, "Failed to copy field: %s", key);
+                    return NULL;
+                }
+            }
         }
+    }
 
-        /* Copy all fields except the one we're setting */
-        if (MONGOLITE_UNLIKELY(!_copy_except_field(tmp, result, field_name))) {
-            bson_destroy(tmp);
-            bson_destroy(result);
-            set_error(error, BSON_UPDATE_LIB, -1, "Failed to copy fields");
-            return NULL;
+    /* Add new fields that weren't in original document */
+    for (size_t i = 0; i < n_fields; i++) {
+        if (!fields[i].used) {
+            if (MONGOLITE_UNLIKELY(!bson_append_iter(result, fields[i].name, -1, &fields[i].value_iter))) {
+                bson_destroy(result);
+                set_error(error, BSON_UPDATE_LIB, -1, "Failed to append new field: %s", fields[i].name);
+                return NULL;
+            }
         }
-
-        /* Add new field value */
-        if (MONGOLITE_UNLIKELY(!bson_append_iter(tmp, field_name, -1, &field_iter))) {
-            bson_destroy(tmp);
-            bson_destroy(result);
-            set_error(error, BSON_UPDATE_LIB, -1, "Failed to append field: %s", field_name);
-            return NULL;
-        }
-
-        /* Replace result with tmp */
-        bson_destroy(result);
-        result = tmp;
     }
 
     return result;
 }
 
 /* ============================================================
- * $unset operator
+ * $unset operator - Already O(n)
  * ============================================================ */
 
 MONGOLITE_WARN_UNUSED
@@ -152,8 +198,15 @@ bson_t* bson_update_apply_unset(const bson_t *doc, bson_iter_t *unset_iter, gerr
 }
 
 /* ============================================================
- * $inc operator
+ * $inc operator - Single-pass O(n) implementation
  * ============================================================ */
+
+typedef struct {
+    const char *name;
+    double inc_value;
+    bson_type_t inc_type;
+    bool used;
+} bson_inc_field_t;
 
 MONGOLITE_HOT MONGOLITE_WARN_UNUSED
 bson_t* bson_update_apply_inc(const bson_t *doc, bson_iter_t *inc_iter, gerror_t *error) {
@@ -164,19 +217,18 @@ bson_t* bson_update_apply_inc(const bson_t *doc, bson_iter_t *inc_iter, gerror_t
         return NULL;
     }
 
-    /* Start with a copy of the input document */
-    bson_t *result = bson_copy(doc);
-    if (MONGOLITE_UNLIKELY(!result)) {
-        set_error(error, "system", -1, "Failed to copy document");
-        return NULL;
-    }
+    /* Collect all fields to increment */
+    bson_inc_field_t fields[BSON_UPDATE_MAX_FIELDS];
+    size_t n_fields = 0;
 
     while (bson_iter_next(&field_iter)) {
-        const char *field_name = bson_iter_key(&field_iter);
+        if (MONGOLITE_UNLIKELY(n_fields >= BSON_UPDATE_MAX_FIELDS)) {
+            set_error(error, BSON_UPDATE_LIB, -1, "$inc too many fields (max %d)", BSON_UPDATE_MAX_FIELDS);
+            return NULL;
+        }
 
-        /* Get increment value */
-        double inc_value = 0;
         bson_type_t inc_type = bson_iter_type(&field_iter);
+        double inc_value;
 
         if (inc_type == BSON_TYPE_INT32) {
             inc_value = bson_iter_int32(&field_iter);
@@ -185,76 +237,102 @@ bson_t* bson_update_apply_inc(const bson_t *doc, bson_iter_t *inc_iter, gerror_t
         } else if (inc_type == BSON_TYPE_DOUBLE) {
             inc_value = bson_iter_double(&field_iter);
         } else {
-            bson_destroy(result);
             set_error(error, BSON_UPDATE_LIB, -1, "$inc value must be numeric");
             return NULL;
         }
 
-        /* Find existing field */
-        bson_iter_t doc_field;
-        double new_value;
-        bson_type_t result_type = inc_type;
+        fields[n_fields].name = bson_iter_key(&field_iter);
+        fields[n_fields].inc_value = inc_value;
+        fields[n_fields].inc_type = inc_type;
+        fields[n_fields].used = false;
+        n_fields++;
+    }
 
-        if (bson_iter_init_find(&doc_field, result, field_name)) {
-            /* Field exists - increment it */
-            double current_value = 0;
-            bson_type_t field_type = bson_iter_type(&doc_field);
+    if (n_fields == 0) {
+        return bson_copy(doc);
+    }
 
-            if (field_type == BSON_TYPE_INT32) {
-                current_value = bson_iter_int32(&doc_field);
-            } else if (field_type == BSON_TYPE_INT64) {
-                current_value = (double)bson_iter_int64(&doc_field);
-            } else if (field_type == BSON_TYPE_DOUBLE) {
-                current_value = bson_iter_double(&doc_field);
-            } else {
-                bson_destroy(result);
-                set_error(error, BSON_UPDATE_LIB, -1, "$inc field must be numeric");
-                return NULL;
+    /* Single-pass rebuild */
+    bson_t *result = bson_new();
+    if (MONGOLITE_UNLIKELY(!result)) {
+        set_error(error, "system", -1, "Out of memory");
+        return NULL;
+    }
+
+    bson_iter_t doc_iter;
+    if (MONGOLITE_LIKELY(bson_iter_init(&doc_iter, doc))) {
+        while (bson_iter_next(&doc_iter)) {
+            const char *key = bson_iter_key(&doc_iter);
+
+            /* Check if this field is being incremented */
+            bool found = false;
+            for (size_t i = 0; i < n_fields; i++) {
+                if (strcmp(key, fields[i].name) == 0) {
+                    /* Get current value and increment */
+                    double current_value = 0;
+                    bson_type_t field_type = bson_iter_type(&doc_iter);
+
+                    if (field_type == BSON_TYPE_INT32) {
+                        current_value = bson_iter_int32(&doc_iter);
+                    } else if (field_type == BSON_TYPE_INT64) {
+                        current_value = (double)bson_iter_int64(&doc_iter);
+                    } else if (field_type == BSON_TYPE_DOUBLE) {
+                        current_value = bson_iter_double(&doc_iter);
+                    } else {
+                        bson_destroy(result);
+                        set_error(error, BSON_UPDATE_LIB, -1, "$inc field must be numeric");
+                        return NULL;
+                    }
+
+                    double new_value = current_value + fields[i].inc_value;
+
+                    /* Determine result type */
+                    bson_type_t result_type;
+                    if (field_type == BSON_TYPE_INT32 && fields[i].inc_type == BSON_TYPE_INT32) {
+                        result_type = BSON_TYPE_INT32;
+                    } else if (field_type == BSON_TYPE_INT64 || fields[i].inc_type == BSON_TYPE_INT64) {
+                        result_type = BSON_TYPE_INT64;
+                    } else {
+                        result_type = BSON_TYPE_DOUBLE;
+                    }
+
+                    /* Append incremented value */
+                    if (result_type == BSON_TYPE_INT32) {
+                        BSON_APPEND_INT32(result, key, (int32_t)new_value);
+                    } else if (result_type == BSON_TYPE_INT64) {
+                        BSON_APPEND_INT64(result, key, (int64_t)new_value);
+                    } else {
+                        BSON_APPEND_DOUBLE(result, key, new_value);
+                    }
+
+                    fields[i].used = true;
+                    found = true;
+                    break;
+                }
             }
 
-            new_value = current_value + inc_value;
-
-            /* Determine result type */
-            if (field_type == BSON_TYPE_INT32 && inc_type == BSON_TYPE_INT32) {
-                result_type = BSON_TYPE_INT32;
-            } else if (field_type == BSON_TYPE_INT64 || inc_type == BSON_TYPE_INT64) {
-                result_type = BSON_TYPE_INT64;
-            } else {
-                result_type = BSON_TYPE_DOUBLE;
+            if (!found) {
+                /* Keep original field */
+                if (MONGOLITE_UNLIKELY(!bson_append_iter(result, key, -1, &doc_iter))) {
+                    bson_destroy(result);
+                    set_error(error, BSON_UPDATE_LIB, -1, "Failed to copy field: %s", key);
+                    return NULL;
+                }
             }
-        } else {
-            /* Field doesn't exist - use increment value directly */
-            new_value = inc_value;
         }
+    }
 
-        /* Build new document: copy all fields except this one, then add new value */
-        bson_t *tmp = bson_new();
-        if (MONGOLITE_UNLIKELY(!tmp)) {
-            bson_destroy(result);
-            set_error(error, "system", -1, "Out of memory");
-            return NULL;
+    /* Add new fields that weren't in original document */
+    for (size_t i = 0; i < n_fields; i++) {
+        if (!fields[i].used) {
+            if (fields[i].inc_type == BSON_TYPE_INT32) {
+                BSON_APPEND_INT32(result, fields[i].name, (int32_t)fields[i].inc_value);
+            } else if (fields[i].inc_type == BSON_TYPE_INT64) {
+                BSON_APPEND_INT64(result, fields[i].name, (int64_t)fields[i].inc_value);
+            } else {
+                BSON_APPEND_DOUBLE(result, fields[i].name, fields[i].inc_value);
+            }
         }
-
-        /* Copy all fields except the one we're incrementing */
-        if (MONGOLITE_UNLIKELY(!_copy_except_field(tmp, result, field_name))) {
-            bson_destroy(tmp);
-            bson_destroy(result);
-            set_error(error, BSON_UPDATE_LIB, -1, "Failed to copy fields");
-            return NULL;
-        }
-
-        /* Add the incremented value */
-        if (result_type == BSON_TYPE_INT32) {
-            BSON_APPEND_INT32(tmp, field_name, (int32_t)new_value);
-        } else if (result_type == BSON_TYPE_INT64) {
-            BSON_APPEND_INT64(tmp, field_name, (int64_t)new_value);
-        } else {
-            BSON_APPEND_DOUBLE(tmp, field_name, new_value);
-        }
-
-        /* Replace result with tmp */
-        bson_destroy(result);
-        result = tmp;
     }
 
     return result;

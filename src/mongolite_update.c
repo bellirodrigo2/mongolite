@@ -12,6 +12,7 @@
 
 #include "mongolite_internal.h"
 #include "bson_update.h"
+#include "macros.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -21,10 +22,11 @@
  * Update one document
  * ============================================================ */
 
+MONGOLITE_HOT
 int mongolite_update_one(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, const bson_t *update,
                          bool upsert, gerror_t *error) {
-    if (!db || !collection || !update) {
+    if (MONGOLITE_UNLIKELY(!db || !collection || !update)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
         return -1;
     }
@@ -33,11 +35,11 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
     bson_oid_t oid;
     bson_t *existing = NULL;
 
-    if (_mongolite_is_id_query(filter, &oid)) {
+    if (MONGOLITE_LIKELY(_mongolite_is_id_query(filter, &oid))) {
         /* Fast path: direct _id lookup */
         _mongolite_lock(db);
         wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-        if (tree) {
+        if (MONGOLITE_LIKELY(tree)) {
             existing = _mongolite_find_by_id(db, tree, &oid, error);
         }
         _mongolite_unlock(db);
@@ -46,7 +48,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
         existing = mongolite_find_one(db, collection, filter, NULL, error);
     }
 
-    if (!existing) {
+    if (MONGOLITE_UNLIKELY(!existing)) {
         /* No match found */
         if (upsert) {
             /* TODO: Implement upsert - create new document */
@@ -58,7 +60,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
 
     /* Extract _id */
     bson_iter_t id_iter;
-    if (!bson_iter_init_find(&id_iter, existing, "_id")) {
+    if (MONGOLITE_UNLIKELY(!bson_iter_init_find(&id_iter, existing, "_id"))) {
         bson_destroy(existing);
         set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR, "Document missing _id");
         return -1;
@@ -70,7 +72,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
     bson_t *updated = bson_update_apply(existing, update, error);
     bson_destroy(existing);
 
-    if (!updated) {
+    if (MONGOLITE_UNLIKELY(!updated)) {
         return -1;
     }
 
@@ -79,7 +81,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
 
     /* Get collection tree */
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-    if (!tree) {
+    if (MONGOLITE_UNLIKELY(!tree)) {
         bson_destroy(updated);
         _mongolite_unlock(db);
         return -1;
@@ -87,7 +89,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
 
     /* Begin transaction */
     wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (!txn) {
+    if (MONGOLITE_UNLIKELY(!txn)) {
         bson_destroy(updated);
         _mongolite_unlock(db);
         return -1;
@@ -98,7 +100,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
                               doc_id.bytes, sizeof(doc_id.bytes),
                               bson_get_data(updated), updated->len,
                               error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_abort_if_auto(db, txn);
         bson_destroy(updated);
         _mongolite_unlock(db);
@@ -106,7 +108,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
     }
 
     rc = _mongolite_commit_if_auto(db, txn, error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         bson_destroy(updated);
         _mongolite_unlock(db);
         return -1;
@@ -122,10 +124,11 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
  * Update many documents
  * ============================================================ */
 
+MONGOLITE_HOT
 int mongolite_update_many(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, const bson_t *update,
                          bool upsert, int64_t *modified_count, gerror_t *error) {
-    if (!db || !collection || !update) {
+    if (MONGOLITE_UNLIKELY(!db || !collection || !update)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
         return -1;
     }
@@ -139,14 +142,14 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
 
     /* Get collection tree */
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-    if (!tree) {
+    if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         return -1;
     }
 
     /* Begin transaction */
     wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (!txn) {
+    if (MONGOLITE_UNLIKELY(!txn)) {
         _mongolite_unlock(db);
         return -1;
     }
@@ -154,7 +157,7 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
     /* Create cursor using existing transaction (avoids deadlock) */
     mongolite_cursor_t *cursor = _mongolite_cursor_create_with_txn(db, tree, collection,
                                                                     txn, filter, error);
-    if (!cursor) {
+    if (MONGOLITE_UNLIKELY(!cursor)) {
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
         return -1;
@@ -163,10 +166,10 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
     int64_t count = 0;
     const bson_t *doc;
 
-    while (mongolite_cursor_next(cursor, &doc)) {
+    while (MONGOLITE_LIKELY(mongolite_cursor_next(cursor, &doc))) {
         /* Extract _id */
         bson_iter_t id_iter;
-        if (!bson_iter_init_find(&id_iter, doc, "_id")) {
+        if (MONGOLITE_UNLIKELY(!bson_iter_init_find(&id_iter, doc, "_id"))) {
             continue;
         }
         bson_oid_t doc_id;
@@ -174,7 +177,7 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
 
         /* Apply update operators */
         bson_t *updated = bson_update_apply(doc, update, error);
-        if (!updated) {
+        if (MONGOLITE_UNLIKELY(!updated)) {
             mongolite_cursor_destroy(cursor);
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
@@ -188,7 +191,7 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
                                   error);
         bson_destroy(updated);
 
-        if (rc != 0) {
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
             mongolite_cursor_destroy(cursor);
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
@@ -210,7 +213,7 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
     }
 
     int rc = _mongolite_commit_if_auto(db, txn, error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_unlock(db);
         return -1;
     }
@@ -230,7 +233,7 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
 int mongolite_replace_one(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, const bson_t *replacement,
                          bool upsert, gerror_t *error) {
-    if (!db || !collection || !replacement) {
+    if (MONGOLITE_UNLIKELY(!db || !collection || !replacement)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
         return -1;
     }
@@ -249,7 +252,7 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
     /* Find the first matching document */
     bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
 
-    if (!existing) {
+    if (MONGOLITE_UNLIKELY(!existing)) {
         /* No match found */
         if (upsert) {
             /* TODO: Implement upsert */
@@ -261,7 +264,7 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
 
     /* Extract _id from existing document */
     bson_iter_t id_iter;
-    if (!bson_iter_init_find(&id_iter, existing, "_id")) {
+    if (MONGOLITE_UNLIKELY(!bson_iter_init_find(&id_iter, existing, "_id"))) {
         bson_destroy(existing);
         set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR, "Document missing _id");
         return -1;
@@ -288,7 +291,7 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
 
     /* Get collection tree */
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-    if (!tree) {
+    if (MONGOLITE_UNLIKELY(!tree)) {
         bson_destroy(new_doc);
         _mongolite_unlock(db);
         return -1;
@@ -296,7 +299,7 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
 
     /* Begin transaction */
     wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (!txn) {
+    if (MONGOLITE_UNLIKELY(!txn)) {
         bson_destroy(new_doc);
         _mongolite_unlock(db);
         return -1;
@@ -307,7 +310,7 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
                               doc_id.bytes, sizeof(doc_id.bytes),
                               bson_get_data(new_doc), new_doc->len,
                               error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_abort_if_auto(db, txn);
         bson_destroy(new_doc);
         _mongolite_unlock(db);
@@ -317,7 +320,7 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
     rc = _mongolite_commit_if_auto(db, txn, error);
     bson_destroy(new_doc);
 
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_unlock(db);
         return -1;
     }

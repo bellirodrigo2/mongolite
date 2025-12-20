@@ -121,35 +121,57 @@ Extracted update operators into standalone `bson_update.c` module for:
 - `tests/test_bson_update.c` - 18 unit tests
 - `benchmarks/bench_bson_update.c` - Standalone operator benchmarks
 
-**Operator Benchmark Results (Linux, 12 cores @ 4.5GHz):**
+**Operator Benchmark Results (Linux, 12 cores @ 4.5GHz, O(n) optimized):**
 | Operator | Throughput | Latency |
 |----------|------------|---------|
-| $set (single field) | 1.96M/s | 511 ns |
-| $set (3 fields) | 951k/s | 1.05 μs |
-| $inc | 2.12M/s | 471 ns |
-| $unset | 2.93M/s | 341 ns |
-| $push (10-elem) | 976k/s | 1.02 μs |
-| $pull (10-elem) | 702k/s | 1.43 μs |
-| $rename | 2.11M/s | 473 ns |
-| Combined | 835k/s | 1.2 μs |
+| $set (single field) | 2.35M/s | 425 ns |
+| $set (3 fields) | 2.34M/s | 428 ns |
+| $inc | 2.64M/s | 378 ns |
+| $unset | 2.84M/s | 353 ns |
+| $push (10-elem) | 881k/s | 1.14 μs |
+| $pull (10-elem) | 611k/s | 1.64 μs |
+| $rename | 2.02M/s | 494 ns |
+| Combined | 847k/s | 1.18 μs |
 
-**Document Size Scaling:**
-| Doc Size | $set Latency |
-|----------|-------------|
+**Document Size Scaling (single field $set):**
+| Doc Size | Latency |
+|----------|---------|
 | 5 fields | 442 ns |
-| 20 fields | 1.29 μs |
-| 50 fields | 3.30 μs |
-| 100 fields | 5.40 μs |
+| 20 fields | 1.40 μs |
+| 50 fields | 3.32 μs |
+| 100 fields | 6.24 μs |
+
+**Multi-field $set Scaling (O(n) optimized):**
+| Update | Latency |
+|--------|---------|
+| 5/50 fields | 3.90 μs |
+| 10/50 fields | 4.93 μs |
+| 10/100 fields | 8.85 μs |
 
 ---
 
-#### 1.2b Reduce BSON Allocations in Update (Future)
+#### 1.2b Reduce BSON Allocations in Update ✅ COMPLETED
 **Operation:** Update
 **Difficulty:** ★★★☆☆
-**Expected Gain:** 15-25%
+**Actual Gain:** 2.5-7x faster for multi-field updates
 
-Current implementation creates temporary BSON documents for each field modification.
-Future optimization: in-place mutation or single-pass rebuilding.
+Replaced O(n*m) per-field document rebuilding with O(n) single-pass rebuilding.
+
+**Before:** For `$set {a:1, b:2, c:3}` on 50-field doc = 4 complete document copies
+**After:** Single pass through document, replacing/adding fields in one allocation
+
+**Implementation:**
+- `bson_update_apply_set()` - Single-pass rebuild with field array
+- `bson_update_apply_inc()` - Single-pass rebuild with increment array
+- Stack-allocated field arrays (max 64 fields) to avoid heap allocation
+
+**Benchmark Results:**
+| Test Case | Before | After | Speedup |
+|-----------|--------|-------|---------|
+| $set 3 fields (5-field doc) | 1,206 ns | 428 ns | **2.8x faster** |
+| $set 5/50 fields | 17,990 ns | 3,900 ns | **4.6x faster** |
+| $set 10/50 fields | 32,972 ns | 4,927 ns | **6.7x faster** |
+| $set 10/100 fields | 61,421 ns | 8,845 ns | **6.9x faster** |
 
 ---
 
@@ -415,6 +437,14 @@ for (int i = 0; i < n; i++) {
 
 ### Where to Apply Hints
 
+**Files with macros.h included:**
+- `src/mongolite_find.c` ✅
+- `src/mongolite_txn.c` ✅
+- `src/bson_update.c` ✅ (via bson_update.h)
+- `src/mongolite_update.c` ✅
+- `src/mongolite_delete.c` ✅
+- `src/mongolite_insert.c` ✅
+
 | Location | Hint | Status |
 |----------|------|--------|
 | `_find_by_id` | `MONGOLITE_HOT` | ✅ Applied |
@@ -425,9 +455,239 @@ for (int i = 0; i < n; i++) {
 | `bson_update_apply` | `MONGOLITE_HOT` | ✅ Applied |
 | `bson_update_apply_set` | `MONGOLITE_HOT` | ✅ Applied |
 | `bson_update_apply_inc` | `MONGOLITE_HOT` | ✅ Applied |
+| `mongolite_update_one` | `MONGOLITE_HOT` | ✅ Applied |
+| `mongolite_update_many` | `MONGOLITE_HOT` | ✅ Applied |
+| `mongolite_delete_one` | `MONGOLITE_HOT` | ✅ Applied |
+| `mongolite_delete_many` | `MONGOLITE_HOT` | ✅ Applied |
+| `mongolite_insert_one` | `MONGOLITE_HOT` | ✅ Applied |
+| `mongolite_insert_many` | `MONGOLITE_HOT` | ✅ Applied |
+| `_ensure_id` (insert) | `MONGOLITE_HOT` | ✅ Applied |
 | Error paths | `MONGOLITE_UNLIKELY` | ✅ Applied |
 | `_mongolite_tree_cache_get` | `MONGOLITE_HOT` | Pending |
 | `set_error` | `MONGOLITE_COLD` | Pending |
+
+---
+
+### Phase 1.4: Extend Macros to Other mongolite_*.c Files ✅ PARTIALLY COMPLETED
+
+**High priority files completed:**
+
+| File | Priority | Macros Added | Status |
+|------|----------|--------------|--------|
+| `mongolite_update.c` | High | `MONGOLITE_HOT`, `LIKELY/UNLIKELY` | ✅ Completed |
+| `mongolite_delete.c` | High | `MONGOLITE_HOT`, `LIKELY/UNLIKELY` | ✅ Completed |
+| `mongolite_insert.c` | High | `MONGOLITE_HOT`, `LIKELY/UNLIKELY` | ✅ Completed |
+| `mongolite_cursor.c` | Medium | `LIKELY/UNLIKELY` | Pending |
+| `mongolite_collection.c` | Medium | `UNLIKELY` | Pending |
+| `mongolite_db.c` | Low | `UNLIKELY` | Pending |
+| `mongolite_schema.c` | Low | `UNLIKELY` | Pending |
+| `mongolite_util.c` | Low | None needed | N/A |
+
+**Macros applied to high-priority files:**
+- `MONGOLITE_HOT` on main API functions (`mongolite_update_one`, `mongolite_update_many`, `mongolite_delete_one`, `mongolite_delete_many`, `mongolite_insert_one`, `mongolite_insert_many`)
+- `MONGOLITE_UNLIKELY` on all error paths (NULL checks, allocation failures, transaction errors)
+- `MONGOLITE_LIKELY` on success paths (cursor iteration, _id lookups, successful operations)
+
+**Conservative Macro Guidelines:**
+
+1. **SAFE to use liberally:**
+   - `MONGOLITE_LIKELY/UNLIKELY` - Branch hints, no correctness impact
+   - `MONGOLITE_HOT` - Optimization hint only
+   - `MONGOLITE_COLD` - Optimization hint only
+
+2. **USE WITH CAUTION:**
+   - `MONGOLITE_WARN_UNUSED` - Safe but may cause compiler warnings
+   - `MONGOLITE_ALWAYS_INLINE` - Can increase code size, use sparingly
+
+3. **AVOID unless certain:**
+   - `MONGOLITE_PURE` - Compiler may cache results; function must have NO side effects
+   - `MONGOLITE_NONNULL` - Compiler may optimize away NULL checks; dangerous if caller might pass NULL
+   - `MONGOLITE_RESTRICT` - Undefined behavior if pointers overlap
+
+**Pattern for applying macros:**
+
+```c
+// Error paths - always unlikely
+if (MONGOLITE_UNLIKELY(!ptr)) {
+    set_error(error, ...);
+    return -1;
+}
+
+// Success paths - usually likely
+if (MONGOLITE_LIKELY(result == 0)) {
+    return success;
+}
+
+// Hot functions - add to declaration
+MONGOLITE_HOT
+static int _inner_loop_function(...);
+```
+
+---
+
+## Future Optimizations
+
+### Phase 2: System Memory Optimizations (Linux-specific)
+
+Low-level memory optimizations using Linux system calls. These should be wrapped with `#ifdef __linux__` for portability.
+
+#### 2.1 Memory Advise (`madvise`)
+
+Hint to the kernel about memory access patterns:
+
+```c
+#ifdef __linux__
+#include <sys/mman.h>
+
+// For sequential scan (cursor iteration)
+madvise(data, size, MADV_SEQUENTIAL);
+
+// For random access (B-tree lookups)
+madvise(data, size, MADV_RANDOM);
+
+// Pre-fault pages before heavy use
+madvise(data, size, MADV_WILLNEED);
+
+// Release pages after batch operations
+madvise(data, size, MADV_DONTNEED);
+#endif
+```
+
+**Where to apply:**
+| Location | Hint | Rationale |
+|----------|------|-----------|
+| Cursor full scan | `MADV_SEQUENTIAL` | Linear iteration through documents |
+| B-tree node access | `MADV_RANDOM` | Random key lookups |
+| Database open | `MADV_WILLNEED` | Pre-fault hot pages |
+| After bulk delete | `MADV_DONTNEED` | Release freed pages |
+
+#### 2.2 Memory Locking (`mlock`)
+
+Pin critical data in RAM to prevent swapping:
+
+```c
+#ifdef __linux__
+#include <sys/mman.h>
+
+// Lock B-tree root nodes in memory
+mlock(root_node, node_size);
+
+// Lock frequently accessed metadata
+mlock(metadata, sizeof(metadata));
+
+// Unlock when done
+munlock(data, size);
+#endif
+```
+
+**Candidates for mlock:**
+- B-tree root nodes (prevent swap during lookups)
+- Collection metadata cache
+- Hot document cache entries
+
+**Caution:** `mlock` requires `CAP_IPC_LOCK` or appropriate `ulimit`. Consider making this opt-in via configuration.
+
+#### 2.3 Huge Pages (`madvise` + `MAP_HUGETLB`)
+
+Reduce TLB misses for large datasets:
+
+```c
+#ifdef __linux__
+// Advise kernel to use transparent huge pages
+madvise(data, size, MADV_HUGEPAGE);
+
+// Or allocate with explicit huge pages (requires setup)
+void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+#endif
+```
+
+**Where to apply:**
+- Large LMDB memory maps (>2MB)
+- Document cache buffers
+
+#### 2.4 Memory Prefetching (`__builtin_prefetch`)
+
+Already in `macros.h` as `MONGOLITE_PREFETCH`. Use for:
+
+```c
+// Prefetch next B-tree node during traversal
+MONGOLITE_PREFETCH(next_node, 0, 3);  // read, high locality
+
+// Prefetch document data before processing
+MONGOLITE_PREFETCH(doc_data, 0, 1);   // read, low locality
+```
+
+#### 2.5 `posix_fadvise` for File I/O
+
+Hint to kernel about file access patterns (LMDB already uses this internally):
+
+```c
+#ifdef __linux__
+#include <fcntl.h>
+
+// Sequential read
+posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+// Random access
+posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+
+// Will need soon
+posix_fadvise(fd, offset, length, POSIX_FADV_WILLNEED);
+#endif
+```
+
+#### 2.6 Implementation Strategy
+
+1. **Create `src/mem_hints.h`** with portable wrappers:
+
+```c
+#ifndef MEM_HINTS_H
+#define MEM_HINTS_H
+
+#ifdef __linux__
+#include <sys/mman.h>
+
+#define MEM_HINT_SEQUENTIAL(p, sz)  madvise((p), (sz), MADV_SEQUENTIAL)
+#define MEM_HINT_RANDOM(p, sz)      madvise((p), (sz), MADV_RANDOM)
+#define MEM_HINT_WILLNEED(p, sz)    madvise((p), (sz), MADV_WILLNEED)
+#define MEM_HINT_DONTNEED(p, sz)    madvise((p), (sz), MADV_DONTNEED)
+#define MEM_LOCK(p, sz)             mlock((p), (sz))
+#define MEM_UNLOCK(p, sz)           munlock((p), (sz))
+
+#else
+// No-op on other platforms
+#define MEM_HINT_SEQUENTIAL(p, sz)  ((void)0)
+#define MEM_HINT_RANDOM(p, sz)      ((void)0)
+#define MEM_HINT_WILLNEED(p, sz)    ((void)0)
+#define MEM_HINT_DONTNEED(p, sz)    ((void)0)
+#define MEM_LOCK(p, sz)             ((void)0)
+#define MEM_UNLOCK(p, sz)           ((void)0)
+
+#endif
+
+#endif /* MEM_HINTS_H */
+```
+
+2. **Add CMake option:**
+
+```cmake
+option(ENABLE_MEM_HINTS "Enable Linux memory hints (madvise/mlock)" ON)
+
+if(ENABLE_MEM_HINTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_compile_definitions(MONGOLITE_MEM_HINTS)
+endif()
+```
+
+#### 2.7 Priority Order
+
+| Optimization | Impact | Complexity | Priority |
+|--------------|--------|------------|----------|
+| `MADV_SEQUENTIAL` for cursors | Medium | Low | High |
+| `MADV_WILLNEED` on db open | Medium | Low | High |
+| `__builtin_prefetch` in loops | Low-Medium | Low | Medium |
+| `mlock` for hot pages | Medium | Medium | Medium |
+| Huge pages | High (large data) | High | Low |
 
 ---
 
@@ -442,5 +702,5 @@ make bench-insert        # Insert only
 make bench-find          # Find only
 make bench-update        # Update only
 make bench-delete        # Delete only
-make bench_bson_update   # BSON update operators (standalone C)
+make bench-bson          # BSON update operators (standalone C)
 ```

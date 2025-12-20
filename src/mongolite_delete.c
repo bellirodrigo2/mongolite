@@ -7,6 +7,7 @@
  */
 
 #include "mongolite_internal.h"
+#include "macros.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -16,9 +17,10 @@
  * Delete one document
  * ============================================================ */
 
+MONGOLITE_HOT
 int mongolite_delete_one(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, gerror_t *error) {
-    if (!db || !collection) {
+    if (MONGOLITE_UNLIKELY(!db || !collection)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
         return -1;
     }
@@ -27,11 +29,11 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
     bson_oid_t doc_id;
     bool found_by_id = false;
 
-    if (_mongolite_is_id_query(filter, &doc_id)) {
+    if (MONGOLITE_LIKELY(_mongolite_is_id_query(filter, &doc_id))) {
         /* Fast path: we already have the _id, just verify it exists */
         _mongolite_lock(db);
         wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-        if (tree) {
+        if (MONGOLITE_LIKELY(tree)) {
             bson_t *existing = _mongolite_find_by_id(db, tree, &doc_id, error);
             if (existing) {
                 bson_destroy(existing);
@@ -42,14 +44,14 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
     } else {
         /* Slow path: full scan to find document */
         bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
-        if (!existing) {
+        if (MONGOLITE_UNLIKELY(!existing)) {
             /* No match found - not an error */
             return 0;
         }
 
         /* Extract _id */
         bson_iter_t id_iter;
-        if (!bson_iter_init_find(&id_iter, existing, "_id")) {
+        if (MONGOLITE_UNLIKELY(!bson_iter_init_find(&id_iter, existing, "_id"))) {
             bson_destroy(existing);
             set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR, "Document missing _id");
             return -1;
@@ -69,14 +71,14 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
 
     /* Get collection tree */
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-    if (!tree) {
+    if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         return -1;
     }
 
     /* Begin transaction */
     wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (!txn) {
+    if (MONGOLITE_UNLIKELY(!txn)) {
         _mongolite_unlock(db);
         return -1;
     }
@@ -86,7 +88,7 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
     int rc = wtree_delete_one_txn(txn, tree,
                                    doc_id.bytes, sizeof(doc_id.bytes),
                                    &deleted, error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
         return -1;
@@ -95,7 +97,7 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
     /* Update doc count within the same transaction for atomicity */
     if (deleted) {
         rc = _mongolite_update_doc_count_txn(db, txn, collection, -1, error);
-        if (rc != 0) {
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
             return -1;
@@ -104,7 +106,7 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
 
     /* Commit */
     rc = _mongolite_commit_if_auto(db, txn, error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_unlock(db);
         return -1;
     }
@@ -124,10 +126,11 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
  * Delete many documents
  * ============================================================ */
 
+MONGOLITE_HOT
 int mongolite_delete_many(mongolite_db_t *db, const char *collection,
                           const bson_t *filter, int64_t *deleted_count,
                           gerror_t *error) {
-    if (!db || !collection) {
+    if (MONGOLITE_UNLIKELY(!db || !collection)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
         return -1;
     }
@@ -141,14 +144,14 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
 
     /* Get collection tree */
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-    if (!tree) {
+    if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         return -1;
     }
 
     /* Begin transaction */
     wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (!txn) {
+    if (MONGOLITE_UNLIKELY(!txn)) {
         _mongolite_unlock(db);
         return -1;
     }
@@ -156,7 +159,7 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
     /* Create cursor using the existing transaction (avoids deadlock) */
     mongolite_cursor_t *cursor = _mongolite_cursor_create_with_txn(db, tree, collection,
                                                                     txn, filter, error);
-    if (!cursor) {
+    if (MONGOLITE_UNLIKELY(!cursor)) {
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
         return -1;
@@ -168,7 +171,7 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
     size_t ids_capacity = 16;
 
     ids = malloc(sizeof(bson_oid_t) * ids_capacity);
-    if (!ids) {
+    if (MONGOLITE_UNLIKELY(!ids)) {
         mongolite_cursor_destroy(cursor);
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
@@ -177,18 +180,18 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
     }
 
     const bson_t *doc;
-    while (mongolite_cursor_next(cursor, &doc)) {
+    while (MONGOLITE_LIKELY(mongolite_cursor_next(cursor, &doc))) {
         /* Extract _id */
         bson_iter_t id_iter;
-        if (!bson_iter_init_find(&id_iter, doc, "_id")) {
+        if (MONGOLITE_UNLIKELY(!bson_iter_init_find(&id_iter, doc, "_id"))) {
             continue;
         }
 
         /* Expand array if needed */
-        if (n_ids >= ids_capacity) {
+        if (MONGOLITE_UNLIKELY(n_ids >= ids_capacity)) {
             ids_capacity *= 2;
             bson_oid_t *new_ids = realloc(ids, sizeof(bson_oid_t) * ids_capacity);
-            if (!new_ids) {
+            if (MONGOLITE_UNLIKELY(!new_ids)) {
                 free(ids);
                 mongolite_cursor_destroy(cursor);
                 _mongolite_abort_if_auto(db, txn);
@@ -211,7 +214,7 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         int rc = wtree_delete_one_txn(txn, tree,
                                        ids[i].bytes, sizeof(ids[i].bytes),
                                        &deleted, error);
-        if (rc != 0) {
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
             free(ids);
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
@@ -227,9 +230,9 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
 
     /* Update doc count within the same transaction for atomicity */
     int rc = 0;
-    if (count > 0) {
+    if (MONGOLITE_LIKELY(count > 0)) {
         rc = _mongolite_update_doc_count_txn(db, txn, collection, -count, error);
-        if (rc != 0) {
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
             return -1;
@@ -238,7 +241,7 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
 
     /* Commit */
     rc = _mongolite_commit_if_auto(db, txn, error);
-    if (rc != 0) {
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_unlock(db);
         return -1;
     }
