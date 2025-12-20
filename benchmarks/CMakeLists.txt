@@ -77,3 +77,19 @@ add_custom_target(run-bench-delete
     DEPENDS bench_delete
     COMMENT "Running delete benchmarks..."
 )
+
+# ------------------------------------------------------------
+# Standalone C benchmark for bson_update (no Google Benchmark)
+# ------------------------------------------------------------
+
+add_executable(bench_bson_update ${BENCH_DIR}/bench_bson_update.c)
+add_dependencies(bench_bson_update mongolite)
+target_include_directories(bench_bson_update PRIVATE ${BENCH_INCLUDE_DIRS})
+target_link_libraries(bench_bson_update PRIVATE mongolite)
+set_target_properties(bench_bson_update PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
+
+add_custom_target(run-bench-bson-update
+    COMMAND ${BIN_DIR}/bench_bson_update
+    DEPENDS bench_bson_update
+    COMMENT "Running bson_update benchmarks..."
+)

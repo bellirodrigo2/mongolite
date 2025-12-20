@@ -238,6 +238,7 @@ set(MONGOLITE_SOURCES
     ${SRC_DIR}/mongolite_insert.c
     ${SRC_DIR}/mongolite_find.c
     ${SRC_DIR}/mongolite_cursor.c
+    ${SRC_DIR}/bson_update.c
     ${SRC_DIR}/mongolite_update.c
     ${SRC_DIR}/mongolite_delete.c
     ${SRC_DIR}/key_compare.c
@@ -373,7 +374,24 @@ add_dependencies(test_mongolite_delete mongolite)
 target_link_libraries(test_mongolite_delete PRIVATE mongolite)
 add_test(NAME test_mongolite_delete COMMAND test_mongolite_delete)
 
-    set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete
+# --- test para bson_update (standalone BSON update operators)
+
+add_executable(test_bson_update
+    ${TEST_DIR}/test_bson_update.c
+    ${SRC_DIR}/bson_update.c
+    ${SRC_DIR}/key_compare.c
+    ${SRC_DIR}/gerror.c
+)
+add_dependencies(test_bson_update libbson)
+target_include_directories(test_bson_update PRIVATE
+    ${SRC_DIR}
+    ${BSONMATCH_DIR}/src
+    ${MONGOC_INSTALL_DIR}/include/bson-2.3.0
+)
+target_link_libraries(test_bson_update PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
+add_test(NAME test_bson_update COMMAND test_bson_update)
+
+    set_target_properties(test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete test_bson_update
         PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR}
 )
@@ -393,7 +411,7 @@ set_target_properties(test_debug_update PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BI
 
 add_custom_target(run-tests
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete
+    DEPENDS test_gerror test_wtree test_wtree_iter test_key_compare test_bsonmatch test_mongolite_db test_mongolite_collection test_mongolite_insert test_mongolite_find test_mongolite_integration test_mongolite_update test_mongolite_delete test_bson_update
 )
 
 # ============================================================

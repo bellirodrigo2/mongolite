@@ -105,13 +105,53 @@ wtree_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name);
 // Consider uthash (already in project) or simple fixed-size hash table
 ```
 
-#### 1.2 Reduce BSON Allocations in Update
+#### 1.2 BSON Update Module Extraction ✅ COMPLETED
 **Operation:** Update
 **Difficulty:** ★★☆☆☆
+**Actual Gain:** Code organization + testability (no perf change expected)
+
+Extracted update operators into standalone `bson_update.c` module for:
+- Independent unit testing
+- Reusability outside mongolite
+- Isolated benchmarking of operator performance
+
+**Implementation:**
+- `src/bson_update.h` - Public API with compiler hints
+- `src/bson_update.c` - Pure functions for $set, $unset, $inc, $push, $pull, $rename
+- `tests/test_bson_update.c` - 18 unit tests
+- `benchmarks/bench_bson_update.c` - Standalone operator benchmarks
+
+**Operator Benchmark Results (Linux, 12 cores @ 4.5GHz):**
+| Operator | Throughput | Latency |
+|----------|------------|---------|
+| $set (single field) | 1.96M/s | 511 ns |
+| $set (3 fields) | 951k/s | 1.05 μs |
+| $inc | 2.12M/s | 471 ns |
+| $unset | 2.93M/s | 341 ns |
+| $push (10-elem) | 976k/s | 1.02 μs |
+| $pull (10-elem) | 702k/s | 1.43 μs |
+| $rename | 2.11M/s | 473 ns |
+| Combined | 835k/s | 1.2 μs |
+
+**Document Size Scaling:**
+| Doc Size | $set Latency |
+|----------|-------------|
+| 5 fields | 442 ns |
+| 20 fields | 1.29 μs |
+| 50 fields | 3.30 μs |
+| 100 fields | 5.40 μs |
+
+---
+
+#### 1.2b Reduce BSON Allocations in Update (Future)
+**Operation:** Update
+**Difficulty:** ★★★☆☆
 **Expected Gain:** 15-25%
 
-`_apply_set`, `_apply_inc` create temporary BSON documents for each field modification.
+Current implementation creates temporary BSON documents for each field modification.
+Future optimization: in-place mutation or single-pass rebuilding.
 
+---
 
 #### 1.3 Direct _id Lookup for Update/Delete ✅ COMPLETED
 **Operation:** Update, Delete
@@ -382,6 +422,9 @@ for (int i = 0; i < n; i++) {
 | `_mongolite_get_read_txn` | `MONGOLITE_HOT` | ✅ Applied |
 | `_mongolite_get_write_txn` | `MONGOLITE_HOT` | ✅ Applied |
 | `_mongolite_release_read_txn` | `MONGOLITE_HOT` | ✅ Applied |
+| `bson_update_apply` | `MONGOLITE_HOT` | ✅ Applied |
+| `bson_update_apply_set` | `MONGOLITE_HOT` | ✅ Applied |
+| `bson_update_apply_inc` | `MONGOLITE_HOT` | ✅ Applied |
 | Error paths | `MONGOLITE_UNLIKELY` | ✅ Applied |
 | `_mongolite_tree_cache_get` | `MONGOLITE_HOT` | Pending |
 | `set_error` | `MONGOLITE_COLD` | Pending |
@@ -399,4 +442,5 @@ make bench-insert        # Insert only
 make bench-find          # Find only
 make bench-update        # Update only
 make bench-delete        # Delete only
+make bench_bson_update   # BSON update operators (standalone C)
 ```
