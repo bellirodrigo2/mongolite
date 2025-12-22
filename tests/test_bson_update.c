@@ -1,28 +1,16 @@
-/**
- * test_bson_update.c - Unit tests for BSON update operators
- *
- * Tests each update operator in isolation for correctness.
- */
+// test_bson_update.c - Unit tests for BSON update operators (cmocka)
 
-#include <stdio.h>
-#include <stdlib.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <setjmp.h>
+#include <cmocka.h>
 #include <string.h>
-#include <assert.h>
+#include <stdlib.h>
 #include <bson/bson.h>
+
 #include "bson_update.h"
 #include "gerror.h"
-
-static int tests_run = 0;
-static int tests_passed = 0;
-
-#define TEST(name) static void test_##name(void)
-#define RUN_TEST(name) do { \
-    printf("  Testing %s... ", #name); \
-    tests_run++; \
-    test_##name(); \
-    tests_passed++; \
-    printf("PASSED\n"); \
-} while(0)
 
 /* ============================================================
  * Helper: Create document from JSON
@@ -31,10 +19,7 @@ static int tests_passed = 0;
 static bson_t* doc_from_json(const char *json) {
     bson_error_t err;
     bson_t *doc = bson_new_from_json((const uint8_t*)json, -1, &err);
-    if (!doc) {
-        fprintf(stderr, "Failed to parse JSON: %s\n", err.message);
-        abort();
-    }
+    assert_non_null(doc);
     return doc;
 }
 
@@ -65,7 +50,8 @@ static bool has_field(const bson_t *doc, const char *field) {
  * $set tests
  * ============================================================ */
 
-TEST(set_new_field) {
+static void test_set_new_field(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"name\": \"test\"}");
     bson_t *update = doc_from_json("{\"$set\": {\"age\": 25}}");
 
@@ -75,16 +61,17 @@ TEST(set_new_field) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_set(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_utf8_field(result, "name", "test"));
-    assert(has_int32_field(result, "age", 25));
+    assert_non_null(result);
+    assert_true(has_utf8_field(result, "name", "test"));
+    assert_true(has_int32_field(result, "age", 25));
 
     bson_destroy(result);
     bson_destroy(update);
     bson_destroy(doc);
 }
 
-TEST(set_existing_field) {
+static void test_set_existing_field(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"name\": \"old\", \"count\": 10}");
     bson_t *update = doc_from_json("{\"$set\": {\"name\": \"new\"}}");
 
@@ -94,16 +81,17 @@ TEST(set_existing_field) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_set(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_utf8_field(result, "name", "new"));
-    assert(has_int32_field(result, "count", 10));
+    assert_non_null(result);
+    assert_true(has_utf8_field(result, "name", "new"));
+    assert_true(has_int32_field(result, "count", 10));
 
     bson_destroy(result);
     bson_destroy(update);
     bson_destroy(doc);
 }
 
-TEST(set_multiple_fields) {
+static void test_set_multiple_fields(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"a\": 1}");
     bson_t *update = doc_from_json("{\"$set\": {\"b\": 2, \"c\": 3}}");
 
@@ -113,10 +101,10 @@ TEST(set_multiple_fields) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_set(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_int32_field(result, "a", 1));
-    assert(has_int32_field(result, "b", 2));
-    assert(has_int32_field(result, "c", 3));
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "a", 1));
+    assert_true(has_int32_field(result, "b", 2));
+    assert_true(has_int32_field(result, "c", 3));
 
     bson_destroy(result);
     bson_destroy(update);
@@ -127,7 +115,8 @@ TEST(set_multiple_fields) {
  * $unset tests
  * ============================================================ */
 
-TEST(unset_field) {
+static void test_unset_field(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"a\": 1, \"b\": 2, \"c\": 3}");
     bson_t *update = doc_from_json("{\"$unset\": {\"b\": 1}}");
 
@@ -137,17 +126,18 @@ TEST(unset_field) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_unset(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_int32_field(result, "a", 1));
-    assert(!has_field(result, "b"));
-    assert(has_int32_field(result, "c", 3));
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "a", 1));
+    assert_false(has_field(result, "b"));
+    assert_true(has_int32_field(result, "c", 3));
 
     bson_destroy(result);
     bson_destroy(update);
     bson_destroy(doc);
 }
 
-TEST(unset_multiple_fields) {
+static void test_unset_multiple_fields(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"a\": 1, \"b\": 2, \"c\": 3, \"d\": 4}");
     bson_t *update = doc_from_json("{\"$unset\": {\"b\": 1, \"d\": 1}}");
 
@@ -157,18 +147,19 @@ TEST(unset_multiple_fields) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_unset(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_int32_field(result, "a", 1));
-    assert(!has_field(result, "b"));
-    assert(has_int32_field(result, "c", 3));
-    assert(!has_field(result, "d"));
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "a", 1));
+    assert_false(has_field(result, "b"));
+    assert_true(has_int32_field(result, "c", 3));
+    assert_false(has_field(result, "d"));
 
     bson_destroy(result);
     bson_destroy(update);
     bson_destroy(doc);
 }
 
-TEST(unset_nonexistent) {
+static void test_unset_nonexistent(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"a\": 1}");
     bson_t *update = doc_from_json("{\"$unset\": {\"z\": 1}}");
 
@@ -178,8 +169,8 @@ TEST(unset_nonexistent) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_unset(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_int32_field(result, "a", 1));
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "a", 1));
 
     bson_destroy(result);
     bson_destroy(update);
@@ -190,7 +181,8 @@ TEST(unset_nonexistent) {
  * $inc tests
  * ============================================================ */
 
-TEST(inc_existing_field) {
+static void test_inc_existing_field(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"count\": 10}");
     bson_t *update = doc_from_json("{\"$inc\": {\"count\": 5}}");
 
@@ -200,15 +192,16 @@ TEST(inc_existing_field) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_inc(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_int32_field(result, "count", 15));
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "count", 15));
 
     bson_destroy(result);
     bson_destroy(update);
     bson_destroy(doc);
 }
 
-TEST(inc_new_field) {
+static void test_inc_new_field(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"a\": 1}");
     bson_t *update = doc_from_json("{\"$inc\": {\"count\": 5}}");
 
@@ -218,16 +211,17 @@ TEST(inc_new_field) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_inc(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_int32_field(result, "a", 1));
-    assert(has_int32_field(result, "count", 5));
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "a", 1));
+    assert_true(has_int32_field(result, "count", 5));
 
     bson_destroy(result);
     bson_destroy(update);
     bson_destroy(doc);
 }
 
-TEST(inc_negative) {
+static void test_inc_negative(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"count\": 10}");
     bson_t *update = doc_from_json("{\"$inc\": {\"count\": -3}}");
 
@@ -237,8 +231,8 @@ TEST(inc_negative) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_inc(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_int32_field(result, "count", 7));
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "count", 7));
 
     bson_destroy(result);
     bson_destroy(update);
@@ -249,7 +243,8 @@ TEST(inc_negative) {
  * $rename tests
  * ============================================================ */
 
-TEST(rename_field) {
+static void test_rename_field(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"old_name\": \"value\", \"other\": 1}");
     bson_t *update = doc_from_json("{\"$rename\": {\"old_name\": \"new_name\"}}");
 
@@ -259,17 +254,18 @@ TEST(rename_field) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_rename(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(!has_field(result, "old_name"));
-    assert(has_utf8_field(result, "new_name", "value"));
-    assert(has_int32_field(result, "other", 1));
+    assert_non_null(result);
+    assert_false(has_field(result, "old_name"));
+    assert_true(has_utf8_field(result, "new_name", "value"));
+    assert_true(has_int32_field(result, "other", 1));
 
     bson_destroy(result);
     bson_destroy(update);
     bson_destroy(doc);
 }
 
-TEST(rename_nonexistent) {
+static void test_rename_nonexistent(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"a\": 1}");
     bson_t *update = doc_from_json("{\"$rename\": {\"z\": \"new_z\"}}");
 
@@ -279,10 +275,10 @@ TEST(rename_nonexistent) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_rename(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_int32_field(result, "a", 1));
-    assert(!has_field(result, "z"));
-    assert(!has_field(result, "new_z"));
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "a", 1));
+    assert_false(has_field(result, "z"));
+    assert_false(has_field(result, "new_z"));
 
     bson_destroy(result);
     bson_destroy(update);
@@ -293,7 +289,8 @@ TEST(rename_nonexistent) {
  * $push tests
  * ============================================================ */
 
-TEST(push_to_existing_array) {
+static void test_push_to_existing_array(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"items\": [1, 2]}");
     bson_t *update = doc_from_json("{\"$push\": {\"items\": 3}}");
 
@@ -303,8 +300,8 @@ TEST(push_to_existing_array) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_push(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_field(result, "items"));
+    assert_non_null(result);
+    assert_true(has_field(result, "items"));
 
     /* Check array has 3 elements by counting */
     bson_iter_t arr_iter, child_iter;
@@ -312,14 +309,15 @@ TEST(push_to_existing_array) {
     bson_iter_recurse(&arr_iter, &child_iter);
     int count = 0;
     while (bson_iter_next(&child_iter)) count++;
-    assert(count == 3);
+    assert_int_equal(3, count);
 
     bson_destroy(result);
     bson_destroy(update);
     bson_destroy(doc);
 }
 
-TEST(push_to_new_field) {
+static void test_push_to_new_field(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"a\": 1}");
     bson_t *update = doc_from_json("{\"$push\": {\"items\": 1}}");
 
@@ -329,9 +327,9 @@ TEST(push_to_new_field) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_push(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_int32_field(result, "a", 1));
-    assert(has_field(result, "items"));
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "a", 1));
+    assert_true(has_field(result, "items"));
 
     /* Check array has 1 element by counting */
     bson_iter_t arr_iter, child_iter;
@@ -339,7 +337,7 @@ TEST(push_to_new_field) {
     bson_iter_recurse(&arr_iter, &child_iter);
     int count = 0;
     while (bson_iter_next(&child_iter)) count++;
-    assert(count == 1);
+    assert_int_equal(1, count);
 
     bson_destroy(result);
     bson_destroy(update);
@@ -350,7 +348,8 @@ TEST(push_to_new_field) {
  * $pull tests
  * ============================================================ */
 
-TEST(pull_from_array) {
+static void test_pull_from_array(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"items\": [1, 2, 3, 2, 4]}");
     bson_t *update = doc_from_json("{\"$pull\": {\"items\": 2}}");
 
@@ -360,8 +359,8 @@ TEST(pull_from_array) {
     gerror_t error = {0};
     bson_t *result = bson_update_apply_pull(doc, &iter, &error);
 
-    assert(result != NULL);
-    assert(has_field(result, "items"));
+    assert_non_null(result);
+    assert_true(has_field(result, "items"));
 
     /* Check array has 3 elements (both 2s removed) by counting */
     bson_iter_t arr_iter, child_iter;
@@ -369,7 +368,7 @@ TEST(pull_from_array) {
     bson_iter_recurse(&arr_iter, &child_iter);
     int count = 0;
     while (bson_iter_next(&child_iter)) count++;
-    assert(count == 3);
+    assert_int_equal(3, count);
 
     bson_destroy(result);
     bson_destroy(update);
@@ -380,17 +379,18 @@ TEST(pull_from_array) {
  * Combined update tests
  * ============================================================ */
 
-TEST(apply_combined_update) {
+static void test_apply_combined_update(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"name\": \"test\", \"count\": 10, \"remove_me\": 1}");
     bson_t *update = doc_from_json("{\"$set\": {\"name\": \"updated\"}, \"$inc\": {\"count\": 5}, \"$unset\": {\"remove_me\": 1}}");
 
     gerror_t error = {0};
     bson_t *result = bson_update_apply(doc, update, &error);
 
-    assert(result != NULL);
-    assert(has_utf8_field(result, "name", "updated"));
-    assert(has_int32_field(result, "count", 15));
-    assert(!has_field(result, "remove_me"));
+    assert_non_null(result);
+    assert_true(has_utf8_field(result, "name", "updated"));
+    assert_true(has_int32_field(result, "count", 15));
+    assert_false(has_field(result, "remove_me"));
 
     bson_destroy(result);
     bson_destroy(update);
@@ -401,67 +401,115 @@ TEST(apply_combined_update) {
  * Utility function tests
  * ============================================================ */
 
-TEST(is_update_spec_true) {
+static void test_is_update_spec_true(void **state) {
+    (void)state;
     bson_t *update = doc_from_json("{\"$set\": {\"a\": 1}}");
-    assert(bson_update_is_update_spec(update) == true);
+    assert_true(bson_update_is_update_spec(update));
     bson_destroy(update);
 }
 
-TEST(is_update_spec_false) {
+static void test_is_update_spec_false(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"name\": \"test\"}");
-    assert(bson_update_is_update_spec(doc) == false);
+    assert_false(bson_update_is_update_spec(doc));
     bson_destroy(doc);
 }
 
-TEST(is_update_spec_mixed) {
+static void test_is_update_spec_mixed(void **state) {
+    (void)state;
     bson_t *doc = doc_from_json("{\"$set\": {\"a\": 1}, \"b\": 2}");
-    assert(bson_update_is_update_spec(doc) == false);
+    assert_false(bson_update_is_update_spec(doc));
     bson_destroy(doc);
 }
 
 /* ============================================================
- * Main
+ * ID preservation test
  * ============================================================ */
 
+static void test_id_preserved(void **state) {
+    (void)state;
+    bson_oid_t oid;
+    bson_oid_init(&oid, NULL);
+
+    bson_t *doc = bson_new();
+    BSON_APPEND_OID(doc, "_id", &oid);
+    BSON_APPEND_UTF8(doc, "name", "Alice");
+
+    bson_t *update = doc_from_json("{\"$set\": {\"name\": \"Bob\"}}");
+
+    gerror_t error = {0};
+    bson_t *result = bson_update_apply(doc, update, &error);
+
+    assert_non_null(result);
+
+    bson_iter_t iter;
+    assert_true(bson_iter_init_find(&iter, result, "_id"));
+
+    const bson_oid_t *result_oid = bson_iter_oid(&iter);
+    assert_true(bson_oid_equal(&oid, result_oid));
+
+    bson_iter_t name_iter;
+    assert_true(bson_iter_init_find(&name_iter, result, "name"));
+    assert_string_equal("Bob", bson_iter_utf8(&name_iter, NULL));
+
+    bson_destroy(doc);
+    bson_destroy(update);
+    bson_destroy(result);
+}
+
+/* ============================================================
+ * Empty update test
+ * ============================================================ */
+
+static void test_empty_update(void **state) {
+    (void)state;
+    bson_t *doc = doc_from_json("{\"name\": \"Alice\"}");
+    bson_t *update = bson_new();
+
+    gerror_t error = {0};
+    bson_t *result = bson_update_apply(doc, update, &error);
+
+    assert_non_null(result);
+    assert_true(has_utf8_field(result, "name", "Alice"));
+
+    bson_destroy(doc);
+    bson_destroy(update);
+    bson_destroy(result);
+}
+
 int main(void) {
-    printf("Running bson_update tests...\n\n");
+    const struct CMUnitTest tests[] = {
+        // $set operator
+        cmocka_unit_test(test_set_new_field),
+        cmocka_unit_test(test_set_existing_field),
+        cmocka_unit_test(test_set_multiple_fields),
+        // $unset operator
+        cmocka_unit_test(test_unset_field),
+        cmocka_unit_test(test_unset_multiple_fields),
+        cmocka_unit_test(test_unset_nonexistent),
+        // $inc operator
+        cmocka_unit_test(test_inc_existing_field),
+        cmocka_unit_test(test_inc_new_field),
+        cmocka_unit_test(test_inc_negative),
+        // $rename operator
+        cmocka_unit_test(test_rename_field),
+        cmocka_unit_test(test_rename_nonexistent),
+        // $push operator
+        cmocka_unit_test(test_push_to_existing_array),
+        cmocka_unit_test(test_push_to_new_field),
+        // $pull operator
+        cmocka_unit_test(test_pull_from_array),
+        // Combined updates
+        cmocka_unit_test(test_apply_combined_update),
+        // Utility functions
+        cmocka_unit_test(test_is_update_spec_true),
+        cmocka_unit_test(test_is_update_spec_false),
+        cmocka_unit_test(test_is_update_spec_mixed),
+        // ID preservation
+        cmocka_unit_test(test_id_preserved),
+        // Empty update
+        cmocka_unit_test(test_empty_update),
+    };
 
-    printf("$set operator:\n");
-    RUN_TEST(set_new_field);
-    RUN_TEST(set_existing_field);
-    RUN_TEST(set_multiple_fields);
-
-    printf("\n$unset operator:\n");
-    RUN_TEST(unset_field);
-    RUN_TEST(unset_multiple_fields);
-    RUN_TEST(unset_nonexistent);
-
-    printf("\n$inc operator:\n");
-    RUN_TEST(inc_existing_field);
-    RUN_TEST(inc_new_field);
-    RUN_TEST(inc_negative);
-
-    printf("\n$rename operator:\n");
-    RUN_TEST(rename_field);
-    RUN_TEST(rename_nonexistent);
-
-    printf("\n$push operator:\n");
-    RUN_TEST(push_to_existing_array);
-    RUN_TEST(push_to_new_field);
-
-    printf("\n$pull operator:\n");
-    RUN_TEST(pull_from_array);
-
-    printf("\nCombined updates:\n");
-    RUN_TEST(apply_combined_update);
-
-    printf("\nUtility functions:\n");
-    RUN_TEST(is_update_spec_true);
-    RUN_TEST(is_update_spec_false);
-    RUN_TEST(is_update_spec_mixed);
-
-    printf("\n========================================\n");
-    printf("Tests: %d/%d passed\n", tests_passed, tests_run);
-
-    return tests_passed == tests_run ? 0 : 1;
+    return cmocka_run_group_tests(tests, NULL, NULL);
 }

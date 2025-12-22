@@ -1,6 +1,22 @@
 # ============================================================
-# tests/CMakeLists.txt - Test targets
+# tests/CMakeLists.txt - Test targets with cmocka
 # ============================================================
+
+include(FetchContent)
+
+# ============================================================
+# Fetch cmocka
+# ============================================================
+
+FetchContent_Declare(
+    cmocka
+    GIT_REPOSITORY https://gitlab.com/cmocka/cmocka.git
+    GIT_TAG cmocka-1.1.7
+)
+
+set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(cmocka)
 
 set(TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -13,12 +29,14 @@ set(TEST_INCLUDE_DIRS
 )
 
 # ============================================================
-# Macro to add a test executable
+# Macro to add a test executable with cmocka
 # ============================================================
 
 macro(add_mongolite_test NAME)
     add_executable(${NAME} ${TEST_DIR}/${NAME}.c ${ARGN})
     set_target_properties(${NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
+    target_link_libraries(${NAME} PRIVATE cmocka)
+    target_include_directories(${NAME} PRIVATE ${cmocka_SOURCE_DIR}/include)
     add_test(NAME ${NAME} COMMAND ${NAME})
 endmacro()
 
