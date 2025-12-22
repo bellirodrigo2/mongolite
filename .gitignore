@@ -10,6 +10,9 @@ RelWithDebInfo/
 
 todo
 
+# Test folders
+test_*/
+
 # Object files
 *.o
 *.ko

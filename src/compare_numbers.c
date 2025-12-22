@@ -71,17 +71,37 @@ numeric_fallback_compare(const bson_iter_t *a,
     if (ta != tb)
         return ta < tb ? -1 : 1;
 
-    /* 2) ordem por representação canônica */
-    bson_value_t va, vb;
-    char sa[64], sb[64];
-
-    bson_iter_value(a, &va);
-    bson_iter_value(b, &vb);
-
-    bson_value_to_string(&va, sa, sizeof(sa));
-    bson_value_to_string(&vb, sb, sizeof(sb));
-
-    return strcmp(sa, sb);
+    /* 2) Compare by raw value based on type */
+    switch (ta) {
+    case BSON_TYPE_INT32: {
+        int32_t va = bson_iter_int32(a);
+        int32_t vb = bson_iter_int32(b);
+        if (va < vb) return -1;
+        if (va > vb) return 1;
+        return 0;
+    }
+    case BSON_TYPE_INT64: {
+        int64_t va = bson_iter_int64(a);
+        int64_t vb = bson_iter_int64(b);
+        if (va < vb) return -1;
+        if (va > vb) return 1;
+        return 0;
+    }
+    case BSON_TYPE_DOUBLE: {
+        double va = bson_iter_double(a);
+        double vb = bson_iter_double(b);
+        /* Handle NaN - NaN == NaN for ordering purposes */
+        if (isnan(va) && isnan(vb)) return 0;
+        if (isnan(va)) return -1;
+        if (isnan(vb)) return 1;
+        /* Handle infinity */
+        if (va < vb) return -1;
+        if (va > vb) return 1;
+        return 0;
+    }
+    default:
+        return 0;
+    }
 }
 
 /*

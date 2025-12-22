@@ -79,6 +79,68 @@ target_include_directories(test_bson_update PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_bson_update PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
 
 # ============================================================
+# Mock wtree infrastructure for unit testing
+# ============================================================
+
+set(MOCK_WTREE_SOURCES
+    ${TEST_DIR}/mock_wtree.c
+)
+
+# Mongolite sources (excluding wtree.c - we mock it)
+set(MONGOLITE_SOURCES_NO_WTREE
+    ${SRC_DIR}/mongolite_db.c
+    ${SRC_DIR}/mongolite_collection.c
+    ${SRC_DIR}/mongolite_schema.c
+    ${SRC_DIR}/mongolite_cursor.c
+    ${SRC_DIR}/mongolite_txn.c
+    ${SRC_DIR}/mongolite_insert.c
+    ${SRC_DIR}/mongolite_find.c
+    ${SRC_DIR}/mongolite_update.c
+    ${SRC_DIR}/mongolite_delete.c
+    ${SRC_DIR}/mongolite_util.c
+    ${SRC_DIR}/bson_update.c
+    ${SRC_DIR}/key_compare.c
+    ${SRC_DIR}/compare_numbers.c
+    ${SRC_DIR}/gerror.c
+)
+
+# Macro for mocked unit tests
+macro(add_mocked_unit_test NAME)
+    add_executable(${NAME}
+        ${TEST_DIR}/${NAME}.c
+        ${MOCK_WTREE_SOURCES}
+        ${MONGOLITE_SOURCES_NO_WTREE}
+        ${ARGN}
+    )
+    set_target_properties(${NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
+    target_link_libraries(${NAME} PRIVATE cmocka bsonmatch m pthread)
+    target_include_directories(${NAME} PRIVATE
+        ${cmocka_SOURCE_DIR}/include
+        ${TEST_INCLUDE_DIRS}
+        ${TEST_DIR}
+    )
+    add_dependencies(${NAME} libbson bsonmatch)
+    target_link_libraries(${NAME} PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
+    add_test(NAME ${NAME} COMMAND ${NAME})
+endmacro()
+
+# compare_numbers test - standalone, no mocking needed
+add_mongolite_test(test_compare_numbers
+    ${SRC_DIR}/compare_numbers.c
+)
+add_dependencies(test_compare_numbers libbson)
+target_include_directories(test_compare_numbers PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_compare_numbers PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
+
+# ============================================================
+# Mocked unit tests
+# ============================================================
+
+add_mocked_unit_test(test_mongolite_txn_mocked)
+add_mocked_unit_test(test_mongolite_cursor_mocked)
+add_mocked_unit_test(test_mongolite_insert_mocked)
+
+# ============================================================
 # Mongolite integration tests (full library)
 # ============================================================
 
@@ -96,15 +158,7 @@ add_mongolite_integration_test(test_mongolite_find)
 add_mongolite_integration_test(test_mongolite_integration)
 add_mongolite_integration_test(test_mongolite_update)
 add_mongolite_integration_test(test_mongolite_delete)
-
-# ============================================================
-# Debug test (not part of test suite)
-# ============================================================
-
-add_executable(test_debug_update ${TEST_DIR}/test_debug_update.c)
-add_dependencies(test_debug_update mongolite)
-target_link_libraries(test_debug_update PRIVATE mongolite)
-set_target_properties(test_debug_update PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
+add_mongolite_integration_test(test_stress)
 
 # ============================================================
 # Collect all test targets for dependencies
@@ -117,6 +171,10 @@ set(ALL_TEST_TARGETS
     test_key_compare
     test_bsonmatch
     test_bson_update
+    test_compare_numbers
+    test_mongolite_txn_mocked
+    test_mongolite_cursor_mocked
+    test_mongolite_insert_mocked
     test_mongolite_db
     test_mongolite_collection
     test_mongolite_insert
@@ -124,6 +182,7 @@ set(ALL_TEST_TARGETS
     test_mongolite_integration
     test_mongolite_update
     test_mongolite_delete
+    test_stress
 )
 
 # Custom target to run all tests

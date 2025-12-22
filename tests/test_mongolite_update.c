@@ -452,54 +452,150 @@ static void test_combined_operators(void **state) {
     (void)state;
     mongolite_db_t *db = setup_test_db();
     assert_non_null(db);
-    
+
     gerror_t error = {0};
-    
+
     bson_oid_t id;
     int rc = mongolite_insert_one_json(db, "users", "{\"name\": \"Test\", \"age\": 30, \"score\": 100, \"old_field\": \"x\"}", &id, &error);
     assert_int_equal(0, rc);
-    
+
     bson_t *filter = bson_new();
     BSON_APPEND_OID(filter, "_id", &id);
-    
+
     bson_t *update = bson_new();
-    
+
     bson_t set_doc;
     BSON_APPEND_DOCUMENT_BEGIN(update, "$set", &set_doc);
     BSON_APPEND_UTF8(&set_doc, "name", "Test Updated");
     bson_append_document_end(update, &set_doc);
-    
+
     bson_t inc_doc;
     BSON_APPEND_DOCUMENT_BEGIN(update, "$inc", &inc_doc);
     BSON_APPEND_INT32(&inc_doc, "age", 1);
     BSON_APPEND_INT32(&inc_doc, "score", 50);
     bson_append_document_end(update, &inc_doc);
-    
+
     bson_t unset_doc;
     BSON_APPEND_DOCUMENT_BEGIN(update, "$unset", &unset_doc);
     BSON_APPEND_INT32(&unset_doc, "old_field", 1);
     bson_append_document_end(update, &unset_doc);
-    
+
     rc = mongolite_update_one(db, "users", filter, update, false, &error);
     assert_int_equal(0, rc);
-    
+
     bson_destroy(update);
-    
+
     bson_t *found = mongolite_find_one(db, "users", filter, NULL, &error);
     assert_non_null(found);
-    
+
     bson_iter_t iter;
     assert_true(bson_iter_init_find(&iter, found, "name"));
     assert_string_equal("Test Updated", bson_iter_utf8(&iter, NULL));
-    
+
     assert_true(bson_iter_init_find(&iter, found, "age"));
     assert_int_equal(31, bson_iter_int32(&iter));
-    
+
     assert_true(bson_iter_init_find(&iter, found, "score"));
     assert_int_equal(150, bson_iter_int32(&iter));
-    
+
     assert_false(bson_iter_init_find(&iter, found, "old_field"));
-    
+
+    bson_destroy(filter);
+    bson_destroy(found);
+    mongolite_close(db);
+}
+
+static void test_inc_double(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    bson_oid_t id;
+    int rc = mongolite_insert_one_json(db, "users", "{\"name\": \"Test\", \"score\": 100.0}", &id, &error);
+    assert_int_equal(0, rc);
+
+    bson_t *filter = bson_new();
+    BSON_APPEND_OID(filter, "_id", &id);
+
+    bson_t *update = bson_new();
+    bson_t inc_doc;
+    BSON_APPEND_DOCUMENT_BEGIN(update, "$inc", &inc_doc);
+    BSON_APPEND_DOUBLE(&inc_doc, "score", 0.5);
+    bson_append_document_end(update, &inc_doc);
+
+    rc = mongolite_update_one(db, "users", filter, update, false, &error);
+    assert_int_equal(0, rc);
+
+    bson_destroy(update);
+
+    bson_t *found = mongolite_find_one(db, "users", filter, NULL, &error);
+    assert_non_null(found);
+
+    bson_iter_t iter;
+    assert_true(bson_iter_init_find(&iter, found, "score"));
+    double score = bson_iter_double(&iter);
+    assert_true(score > 100.4 && score < 100.6);
+
+    bson_destroy(filter);
+    bson_destroy(found);
+    mongolite_close(db);
+}
+
+static void test_repeated_updates(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    bson_oid_t id;
+    int rc = mongolite_insert_one_json(db, "users",
+        "{\"name\": \"Test\", \"age\": 30, \"score\": 100.0, \"active\": false}", &id, &error);
+    assert_int_equal(0, rc);
+
+    bson_t *filter = bson_new();
+    BSON_APPEND_OID(filter, "_id", &id);
+
+    // Perform 100 repeated updates with combined $set + $inc
+    const int N = 100;
+    for (int i = 0; i < N; i++) {
+        bson_t *update = bson_new();
+
+        bson_t set_doc;
+        BSON_APPEND_DOCUMENT_BEGIN(update, "$set", &set_doc);
+        BSON_APPEND_BOOL(&set_doc, "active", (i % 2) == 0);
+        bson_append_document_end(update, &set_doc);
+
+        bson_t inc_doc;
+        BSON_APPEND_DOCUMENT_BEGIN(update, "$inc", &inc_doc);
+        BSON_APPEND_INT32(&inc_doc, "age", 1);
+        BSON_APPEND_DOUBLE(&inc_doc, "score", 0.5);
+        bson_append_document_end(update, &inc_doc);
+
+        rc = mongolite_update_one(db, "users", filter, update, false, &error);
+        bson_destroy(update);
+        assert_int_equal(0, rc);
+    }
+
+    // Verify final values
+    bson_t *found = mongolite_find_one(db, "users", filter, NULL, &error);
+    assert_non_null(found);
+
+    bson_iter_t iter;
+    assert_true(bson_iter_init_find(&iter, found, "age"));
+    assert_int_equal(30 + N, bson_iter_int32(&iter));
+
+    assert_true(bson_iter_init_find(&iter, found, "score"));
+    double expected_score = 100.0 + (N * 0.5);
+    double actual_score = bson_iter_double(&iter);
+    assert_true(actual_score > expected_score - 0.1 && actual_score < expected_score + 0.1);
+
+    assert_true(bson_iter_init_find(&iter, found, "active"));
+    // N=100 is even, last iteration i=99, (99 % 2) == 1, so active = false
+    assert_false(bson_iter_bool(&iter));
+
     bson_destroy(filter);
     bson_destroy(found);
     mongolite_close(db);
@@ -518,7 +614,9 @@ int main(void) {
         cmocka_unit_test_teardown(test_replace_one, teardown),
         cmocka_unit_test_teardown(test_json_wrappers, teardown),
         cmocka_unit_test_teardown(test_combined_operators, teardown),
+        cmocka_unit_test_teardown(test_inc_double, teardown),
+        cmocka_unit_test_teardown(test_repeated_updates, teardown),
     };
-    
+
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
