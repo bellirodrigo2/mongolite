@@ -179,3 +179,5 @@ dist/
 # AI tools
 .claude/
 ROADMAP.md
+INDEX_ROADMAP.md
+OPTIMIZATION.md
