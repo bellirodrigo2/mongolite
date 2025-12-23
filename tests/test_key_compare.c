@@ -6,6 +6,8 @@
 #include <setjmp.h>
 #include <cmocka.h>
 #include <string.h>
+#include <math.h>
+#include <float.h>
 #include <bson/bson.h>
 
 #include "key_compare.h"
@@ -795,6 +797,218 @@ static void test_array_length_matters(void **state) {
     bson_destroy(b);
 }
 
+/* ============================================================
+ * TESTS: Advanced Numeric Comparison (edge cases)
+ * ============================================================ */
+
+static void test_int32_negative(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int32("n", -100);
+    bson_t *b = make_doc_int32("n", 100);
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_int32_zero(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int32("n", 0);
+    bson_t *b = make_doc_int32("n", 0);
+    assert_int_equal(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_int32_min_max(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int32("n", INT32_MIN);
+    bson_t *b = make_doc_int32("n", INT32_MAX);
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_int64_greater(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int64("n", 9007199254740992LL);
+    bson_t *b = make_doc_int64("n", 100LL);
+    assert_true(bson_compare_docs(a, b) > 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_double_greater(void **state) {
+    (void)state;
+    bson_t *a = make_doc_double("n", 9.99);
+    bson_t *b = make_doc_double("n", 1.11);
+    assert_true(bson_compare_docs(a, b) > 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_double_negative(void **state) {
+    (void)state;
+    bson_t *a = make_doc_double("n", -1.5);
+    bson_t *b = make_doc_double("n", 1.5);
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_double_zero_positive_negative(void **state) {
+    (void)state;
+    bson_t *a = make_doc_double("n", -0.0);
+    bson_t *b = make_doc_double("n", 0.0);
+    /* -0.0 and +0.0 should be equal */
+    assert_int_equal(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_double_very_small(void **state) {
+    (void)state;
+    bson_t *a = make_doc_double("n", DBL_MIN);
+    bson_t *b = make_doc_double("n", DBL_MIN * 2);
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+/* Cross-type numeric comparison */
+
+static void test_int32_vs_int64_equal(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int32("n", 42);
+    bson_t *b = make_doc_int64("n", 42LL);
+    assert_int_equal(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_int32_vs_int64_less(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int32("n", 100);
+    bson_t *b = make_doc_int64("n", 1000000000000LL);
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_int32_vs_double_equal(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int32("n", 42);
+    bson_t *b = make_doc_double("n", 42.0);
+    assert_int_equal(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_int32_vs_double_less(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int32("n", 42);
+    bson_t *b = make_doc_double("n", 42.5);
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_int64_vs_double_equal(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int64("n", 1000000LL);
+    bson_t *b = make_doc_double("n", 1000000.0);
+    assert_int_equal(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_int64_vs_double_less(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int64("n", 1000000LL);
+    bson_t *b = make_doc_double("n", 1000000.5);
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+/* Infinity and NaN edge cases */
+
+static void test_double_infinity_positive(void **state) {
+    (void)state;
+    bson_t *a = make_doc_double("n", 1000.0);
+    bson_t *b = make_doc_double("n", INFINITY);
+    /* Normal value < Infinity */
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_double_infinity_negative(void **state) {
+    (void)state;
+    bson_t *a = make_doc_double("n", -INFINITY);
+    bson_t *b = make_doc_double("n", 1000.0);
+    /* -Infinity < normal value */
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_double_nan(void **state) {
+    (void)state;
+    bson_t *a = make_doc_double("n", NAN);
+    bson_t *b = make_doc_double("n", 42.0);
+    /* NaN is "less" than normal values in fallback ordering */
+    int result = bson_compare_docs(a, b);
+    assert_true(result < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_double_nan_both(void **state) {
+    (void)state;
+    bson_t *a = make_doc_double("n", NAN);
+    bson_t *b = make_doc_double("n", NAN);
+    /* Both NaN should be equal */
+    assert_int_equal(0, bson_compare_docs(a, b));
+    bson_destroy(a); bson_destroy(b);
+}
+
+/* Large int64 beyond safe double precision */
+
+static void test_int64_beyond_safe(void **state) {
+    (void)state;
+    /* Values beyond 2^53 where double loses precision */
+    bson_t *a = make_doc_int64("n", 9007199254740993LL);  /* 2^53 + 1 */
+    bson_t *b = make_doc_int64("n", 9007199254740994LL);  /* 2^53 + 2 */
+    /* Uses fallback - still produces deterministic order */
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_int64_negative_beyond_safe(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int64("n", -9007199254740994LL);
+    bson_t *b = make_doc_int64("n", -9007199254740993LL);
+    assert_true(bson_compare_docs(a, b) < 0);
+    bson_destroy(a); bson_destroy(b);
+}
+
+/* Symmetry and transitivity tests */
+
+static void test_numeric_symmetry(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int32("n", 100);
+    bson_t *b = make_doc_double("n", 50.5);
+
+    int ab = bson_compare_docs(a, b);
+    int ba = bson_compare_docs(b, a);
+
+    /* If a > b, then b < a */
+    assert_true((ab > 0 && ba < 0) || (ab < 0 && ba > 0) || (ab == 0 && ba == 0));
+
+    bson_destroy(a); bson_destroy(b);
+}
+
+static void test_numeric_transitivity(void **state) {
+    (void)state;
+    bson_t *a = make_doc_int32("n", 10);
+    bson_t *b = make_doc_double("n", 20.5);
+    bson_t *c = make_doc_int64("n", 30LL);
+
+    int ab = bson_compare_docs(a, b);
+    int bc = bson_compare_docs(b, c);
+    int ac = bson_compare_docs(a, c);
+
+    /* If a < b and b < c, then a < c */
+    if (ab < 0 && bc < 0) {
+        assert_true(ac < 0);
+    }
+
+    bson_destroy(a); bson_destroy(b); bson_destroy(c);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         // Type precedence
@@ -866,6 +1080,33 @@ int main(void) {
         // Arrays
         cmocka_unit_test(test_array_simple_less),
         cmocka_unit_test(test_array_length_matters),
+        // Advanced numeric comparison (edge cases)
+        cmocka_unit_test(test_int32_negative),
+        cmocka_unit_test(test_int32_zero),
+        cmocka_unit_test(test_int32_min_max),
+        cmocka_unit_test(test_int64_greater),
+        cmocka_unit_test(test_double_greater),
+        cmocka_unit_test(test_double_negative),
+        cmocka_unit_test(test_double_zero_positive_negative),
+        cmocka_unit_test(test_double_very_small),
+        // Cross-type numeric comparison
+        cmocka_unit_test(test_int32_vs_int64_equal),
+        cmocka_unit_test(test_int32_vs_int64_less),
+        cmocka_unit_test(test_int32_vs_double_equal),
+        cmocka_unit_test(test_int32_vs_double_less),
+        cmocka_unit_test(test_int64_vs_double_equal),
+        cmocka_unit_test(test_int64_vs_double_less),
+        // Infinity and NaN edge cases
+        cmocka_unit_test(test_double_infinity_positive),
+        cmocka_unit_test(test_double_infinity_negative),
+        cmocka_unit_test(test_double_nan),
+        cmocka_unit_test(test_double_nan_both),
+        // Large int64 beyond safe double precision
+        cmocka_unit_test(test_int64_beyond_safe),
+        cmocka_unit_test(test_int64_negative_beyond_safe),
+        // Symmetry and transitivity
+        cmocka_unit_test(test_numeric_symmetry),
+        cmocka_unit_test(test_numeric_transitivity),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

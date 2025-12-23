@@ -50,6 +50,7 @@ set(MONGOLITE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/bson_update.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_update.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_delete.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_index.c
     ${CMAKE_CURRENT_SOURCE_DIR}/key_compare.c
     ${LMDB_SOURCES}
 )

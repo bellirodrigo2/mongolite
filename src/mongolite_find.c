@@ -174,14 +174,34 @@ bson_t* mongolite_find_one(mongolite_db_t *db, const char *collection,
 
     bson_t *result = NULL;
 
-    /* Optimize: direct _id lookup */
+    /* Optimization 1: direct _id lookup */
     bson_oid_t oid;
     if (_mongolite_is_id_query(filter, &oid)) {
         result = _mongolite_find_by_id(db, tree, &oid, error);
-    } else {
-        /* Full scan with filter */
-        result = _find_one_scan(db, tree, filter, error);
+        _mongolite_unlock(db);
+        /* TODO: Apply projection if specified */
+        (void)projection;
+        return result;
     }
+
+    /* Optimization 2: try to use secondary index */
+    query_analysis_t *analysis = _analyze_query_for_index(filter);
+    if (analysis) {
+        mongolite_cached_index_t *idx = _find_best_index(db, collection, analysis, error);
+        if (idx && analysis->is_simple_equality) {
+            /* Use index for lookup */
+            result = _find_one_with_index(db, collection, tree, idx, filter, error);
+            _free_query_analysis(analysis);
+            _mongolite_unlock(db);
+            /* TODO: Apply projection if specified */
+            (void)projection;
+            return result;
+        }
+        _free_query_analysis(analysis);
+    }
+
+    /* Fallback: Full scan with filter */
+    result = _find_one_scan(db, tree, filter, error);
 
     _mongolite_unlock(db);
 

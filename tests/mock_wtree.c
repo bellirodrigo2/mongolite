@@ -497,6 +497,16 @@ int wtree_delete_one_txn(wtree_txn_t *txn, wtree_tree_t *tree,
     return wtree_delete_one(tree, key, key_size, deleted, error);
 }
 
+int wtree_delete_dup_txn(wtree_txn_t *txn, wtree_tree_t *tree,
+                         const void *key, size_t key_size,
+                         const void *value, size_t value_size,
+                         bool *deleted, gerror_t *error) {
+    /* Mock implementation - just use delete_one since mock doesn't support dupsort */
+    (void)value;
+    (void)value_size;
+    return wtree_delete_one(tree, key, key_size, deleted, error);
+}
+
 int wtree_delete_many_txn(wtree_txn_t *txn, wtree_tree_t *tree,
                           const void **keys, const size_t *key_sizes,
                           size_t count, size_t *deleted_count, gerror_t *error) {

@@ -203,6 +203,17 @@ int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
     return MONGOLITE_OK;
 }
 
+/* Helper to free cached indexes array */
+static void _free_cached_indexes(mongolite_cached_index_t *indexes, size_t count) {
+    if (!indexes) return;
+    for (size_t i = 0; i < count; i++) {
+        free(indexes[i].name);
+        if (indexes[i].keys) bson_destroy(indexes[i].keys);
+        if (indexes[i].tree) wtree_tree_close(indexes[i].tree);
+    }
+    free(indexes);
+}
+
 void _mongolite_tree_cache_remove(mongolite_db_t *db, const char *name) {
     if (!db || !name) return;
 
@@ -214,6 +225,7 @@ void _mongolite_tree_cache_remove(mongolite_db_t *db, const char *name) {
             wtree_tree_close(to_remove->tree);
             free(to_remove->name);
             free(to_remove->tree_name);
+            _free_cached_indexes(to_remove->indexes, to_remove->index_count);
             free(to_remove);
             db->tree_cache_count--;
             return;
@@ -229,6 +241,7 @@ void _mongolite_tree_cache_clear(mongolite_db_t *db) {
         wtree_tree_close(db->tree_cache->tree);
         free(db->tree_cache->name);
         free(db->tree_cache->tree_name);
+        _free_cached_indexes(db->tree_cache->indexes, db->tree_cache->index_count);
         free(db->tree_cache);
         db->tree_cache = next;
     }
@@ -258,6 +271,178 @@ void _mongolite_tree_cache_update_doc_count(mongolite_db_t *db, const char *name
         }
         entry = entry->next;
     }
+}
+
+/* ============================================================
+ * Index Cache Operations (Phase 3)
+ * ============================================================ */
+
+/* Helper to find cache entry by name */
+static mongolite_tree_cache_entry_t* _find_cache_entry(mongolite_db_t *db, const char *name) {
+    mongolite_tree_cache_entry_t *entry = db->tree_cache;
+    while (entry) {
+        if (strcmp(entry->name, name) == 0) {
+            return entry;
+        }
+        entry = entry->next;
+    }
+    return NULL;
+}
+
+/*
+ * Get cached indexes for a collection.
+ * Loads from schema on first access, returns cached array on subsequent calls.
+ * Returns pointer to internal array (do not free).
+ */
+mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
+                                                         const char *collection,
+                                                         size_t *out_count,
+                                                         gerror_t *error) {
+    if (!db || !collection || !out_count) {
+        if (out_count) *out_count = 0;
+        return NULL;
+    }
+
+    mongolite_tree_cache_entry_t *entry = _find_cache_entry(db, collection);
+    if (!entry) {
+        /* Collection not in cache - need to open it first */
+        wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+        if (!tree) {
+            *out_count = 0;
+            return NULL;
+        }
+        entry = _find_cache_entry(db, collection);
+        if (!entry) {
+            *out_count = 0;
+            return NULL;
+        }
+    }
+
+    /* If indexes already loaded, return them */
+    if (entry->indexes_loaded) {
+        *out_count = entry->index_count;
+        return entry->indexes;
+    }
+
+    /* Load indexes from schema */
+    mongolite_schema_entry_t schema = {0};
+    int rc = _mongolite_schema_get(db, collection, &schema, error);
+    if (rc != 0) {
+        *out_count = 0;
+        return NULL;
+    }
+
+    /* Count indexes (excluding _id_) */
+    size_t count = 0;
+    if (schema.indexes) {
+        bson_iter_t iter;
+        if (bson_iter_init(&iter, schema.indexes)) {
+            while (bson_iter_next(&iter)) {
+                if (BSON_ITER_HOLDS_DOCUMENT(&iter)) {
+                    bson_iter_t child;
+                    if (bson_iter_recurse(&iter, &child) &&
+                        bson_iter_find(&child, "name") &&
+                        BSON_ITER_HOLDS_UTF8(&child)) {
+                        const char *idx_name = bson_iter_utf8(&child, NULL);
+                        if (strcmp(idx_name, "_id_") != 0) {
+                            count++;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (count == 0) {
+        entry->indexes = NULL;
+        entry->index_count = 0;
+        entry->indexes_loaded = true;
+        _mongolite_schema_entry_free(&schema);
+        *out_count = 0;
+        return NULL;
+    }
+
+    /* Allocate cached indexes array */
+    entry->indexes = calloc(count, sizeof(mongolite_cached_index_t));
+    if (!entry->indexes) {
+        _mongolite_schema_entry_free(&schema);
+        *out_count = 0;
+        return NULL;
+    }
+
+    /* Populate cached indexes */
+    size_t idx = 0;
+    bson_iter_t iter;
+    if (bson_iter_init(&iter, schema.indexes)) {
+        while (bson_iter_next(&iter) && idx < count) {
+            if (!BSON_ITER_HOLDS_DOCUMENT(&iter)) continue;
+
+            uint32_t doc_len;
+            const uint8_t *doc_data;
+            bson_iter_document(&iter, &doc_len, &doc_data);
+
+            bson_t spec;
+            if (!bson_init_static(&spec, doc_data, doc_len)) continue;
+
+            char *name = NULL;
+            bson_t *keys = NULL;
+            index_config_t config = {0};
+
+            if (_index_spec_from_bson(&spec, &name, &keys, &config) == 0 && name && keys) {
+                /* Skip _id_ index */
+                if (strcmp(name, "_id_") == 0) {
+                    free(name);
+                    bson_destroy(keys);
+                    continue;
+                }
+
+                /* Open the index tree with MDB_DUPSORT for multi-value support */
+                char *tree_name = _mongolite_index_tree_name(collection, name);
+                wtree_tree_t *idx_tree = NULL;
+                if (tree_name) {
+                    idx_tree = wtree_tree_create(db->wdb, tree_name, MDB_DUPSORT, NULL);
+                    if (idx_tree) {
+                        /* Set the same comparator used during creation */
+                        wtree_tree_set_compare(idx_tree, _mongolite_index_compare, NULL);
+                    }
+                    free(tree_name);
+                }
+
+                entry->indexes[idx].name = name;
+                entry->indexes[idx].keys = keys;
+                entry->indexes[idx].tree = idx_tree;
+                entry->indexes[idx].unique = config.unique;
+                entry->indexes[idx].sparse = config.sparse;
+                idx++;
+            } else {
+                free(name);
+                if (keys) bson_destroy(keys);
+            }
+        }
+    }
+
+    entry->index_count = idx;
+    entry->indexes_loaded = true;
+    _mongolite_schema_entry_free(&schema);
+
+    *out_count = entry->index_count;
+    return entry->indexes;
+}
+
+/*
+ * Invalidate the index cache for a collection.
+ * Called when indexes are created or dropped.
+ */
+void _mongolite_invalidate_index_cache(mongolite_db_t *db, const char *collection) {
+    if (!db || !collection) return;
+
+    mongolite_tree_cache_entry_t *entry = _find_cache_entry(db, collection);
+    if (!entry) return;
+
+    _free_cached_indexes(entry->indexes, entry->index_count);
+    entry->indexes = NULL;
+    entry->index_count = 0;
+    entry->indexes_loaded = false;
 }
 
 /* ============================================================

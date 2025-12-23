@@ -196,16 +196,39 @@ static void test_insert_returns_oid(void **state) {
  * Error Injection Tests
  * ============================================================ */
 
+static void test_insert_map_full_auto_resize(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    /* Get initial mapsize */
+    size_t initial_mapsize = wtree_db_get_mapsize((wtree_db_t*)g_db->wdb);
+
+    /* Inject MDB_MAP_FULL error for next insert - should trigger auto-resize */
+    mock_wtree_fail_next_insert(MDB_MAP_FULL);
+
+    bson_t *doc = create_test_doc("resize_test", 1);
+    int rc = mongolite_insert_one(g_db, "test", doc, NULL, &error);
+
+    /* Insert should succeed after resize */
+    assert_int_equal(0, rc);
+
+    /* Mapsize should have doubled */
+    size_t new_mapsize = wtree_db_get_mapsize((wtree_db_t*)g_db->wdb);
+    assert_int_equal(initial_mapsize * 2, new_mapsize);
+
+    bson_destroy(doc);
+}
+
 static void test_insert_wtree_failure(void **state) {
     (void)state;
     gerror_t error = {0};
 
-    /* Inject error for next insert */
-    mock_wtree_fail_next_insert(MDB_MAP_FULL);
+    /* Inject a non-MAP_FULL error that doesn't trigger resize */
+    mock_wtree_fail_next_insert(MDB_KEYEXIST);
 
     bson_t *doc = create_test_doc("will_fail", 1);
     int rc = mongolite_insert_one(g_db, "test", doc, NULL, &error);
-    assert_int_equal(MDB_MAP_FULL, rc);
+    assert_int_equal(MDB_KEYEXIST, rc);
 
     bson_destroy(doc);
 }
@@ -214,8 +237,12 @@ static void test_insert_txn_begin_failure(void **state) {
     (void)state;
     gerror_t error = {0};
 
-    /* Inject txn begin failure */
-    mock_wtree_fail_next_txn_begin(WTREE_TXN_FULL);
+    /*
+     * The insert flow now pre-loads index cache which may use a read transaction.
+     * We need to fail the insert operation itself to test write txn failure path.
+     * Use mock_wtree_fail_next_insert instead.
+     */
+    mock_wtree_fail_next_insert(WTREE_TXN_FULL);
 
     bson_t *doc = create_test_doc("will_fail", 1);
     int rc = mongolite_insert_one(g_db, "test", doc, NULL, &error);
@@ -433,6 +460,7 @@ int main(void) {
         cmocka_unit_test_setup_teardown(test_insert_returns_oid, setup, teardown),
 
         /* Error injection tests */
+        cmocka_unit_test_setup_teardown(test_insert_map_full_auto_resize, setup, teardown),
         cmocka_unit_test_setup_teardown(test_insert_wtree_failure, setup, teardown),
         cmocka_unit_test_setup_teardown(test_insert_txn_begin_failure, setup, teardown),
 

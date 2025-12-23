@@ -4,6 +4,7 @@
 #include "mongolite.h"
 #include "wtree.h"
 #include <bson/bson.h>
+#include "mongolite_helpers.h"
 
 /* Forward declaration for bsonmatch (to avoid including full header) */
 typedef struct _mongoc_matcher_t mongoc_matcher_t;
@@ -79,6 +80,17 @@ extern "C" {
  * ============================================================ */
 
 /*
+ * Cached index info for a collection (avoids schema reads on every CRUD)
+ */
+typedef struct mongolite_cached_index {
+    char *name;                 /* Index name (e.g., "email_1") */
+    bson_t *keys;               /* Index key spec (e.g., {"email": 1}) */
+    wtree_tree_t *tree;         /* Open index tree handle */
+    bool unique;
+    bool sparse;
+} mongolite_cached_index_t;
+
+/*
  * Cached tree handle (for open collection/index trees)
  */
 typedef struct mongolite_tree_cache_entry {
@@ -87,6 +99,12 @@ typedef struct mongolite_tree_cache_entry {
     char *tree_name;            /* Full LMDB tree name (col:xxx or idx:xxx) */
     wtree_tree_t *tree;         /* Open tree handle */
     int64_t doc_count;          /* Cached document count (avoids schema reads) */
+
+    /* Cached indexes for this collection (Phase 3 optimization) */
+    mongolite_cached_index_t *indexes;  /* Array of cached indexes */
+    size_t index_count;                 /* Number of indexes (excluding _id) */
+    bool indexes_loaded;                /* true if indexes have been loaded */
+
     struct mongolite_tree_cache_entry *next;
 } mongolite_tree_cache_entry_t;
 
@@ -219,6 +237,13 @@ void _mongolite_tree_cache_clear(mongolite_db_t *db);
 int64_t _mongolite_tree_cache_get_doc_count(mongolite_db_t *db, const char *name);
 void _mongolite_tree_cache_update_doc_count(mongolite_db_t *db, const char *name, int64_t delta);
 
+/* Index cache operations (Phase 3 optimization) */
+mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
+                                                         const char *collection,
+                                                         size_t *out_count,
+                                                         gerror_t *error);
+void _mongolite_invalidate_index_cache(mongolite_db_t *db, const char *collection);
+
 /* ============================================================
  * Internal Utilities
  * ============================================================ */
@@ -254,10 +279,104 @@ int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
                                      const char *collection, int64_t delta,
                                      gerror_t *error);
 
+/* Auto-resize database on MDB_MAP_FULL (doubles mapsize) */
+int _mongolite_try_resize(mongolite_db_t *db, gerror_t *error);
+
 /* Query optimization helpers */
 bool _mongolite_is_id_query(const bson_t *filter, bson_oid_t *out_oid);
 bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree_tree_t *tree,
                                const bson_oid_t *oid, gerror_t *error);
+
+/* ============================================================
+ * Internal Index Operations (Phase 1 Infrastructure)
+ * ============================================================ */
+
+/* Generate default index name from key spec (e.g., "email_1", "name_1_age_-1")
+ * Returns: allocated string (caller must free), or NULL on error */
+char* _index_name_from_spec(const bson_t *keys);
+
+/* Build index key from document
+ * include_id: true to append document's _id (for tree uniqueness)
+ * Returns: allocated bson_t (caller must destroy), or NULL on error */
+bson_t* _build_index_key(const bson_t *doc, const bson_t *keys, bool include_id);
+
+/* Build key for unique constraint checking (without _id) */
+bson_t* _build_unique_check_key(const bson_t *doc, const bson_t *keys);
+
+/* Index key comparator for wtree (uses bson_compare_docs) */
+int _index_key_compare(const void *key1, size_t key1_len,
+                       const void *key2, size_t key2_len,
+                       void *user_data);
+
+/* LMDB-style index comparator wrapper for wtree_tree_set_compare */
+int _mongolite_index_compare(const MDB_val *a, const MDB_val *b);
+
+/* Serialize/deserialize index keys */
+uint8_t* _index_key_serialize(const bson_t *key, size_t *out_len);
+bson_t* _index_key_deserialize(const uint8_t *data, size_t len);
+
+/* Index value helpers (stores _id for document lookup) */
+uint8_t* _index_value_from_doc(const bson_t *doc, size_t *out_len);
+bool _index_value_get_oid(const uint8_t *data, size_t len, bson_oid_t *out_oid);
+
+/* Index metadata serialization for schema storage */
+bson_t* _index_spec_to_bson(const char *name, const bson_t *keys,
+                            const index_config_t *config);
+int _index_spec_from_bson(const bson_t *spec, char **out_name,
+                          bson_t **out_keys, index_config_t *out_config);
+
+/* Check if document should be indexed (sparse index handling) */
+bool _should_index_document(const bson_t *doc, const bson_t *keys, bool sparse);
+
+/* ============================================================
+ * Internal Query Optimization (Phase 4)
+ * ============================================================ */
+
+/*
+ * Query analysis result - identifies fields that can use an index
+ */
+typedef struct {
+    char **equality_fields;     /* Fields with simple equality (e.g., {"email": "x"}) */
+    size_t equality_count;
+    bool is_simple_equality;    /* true if query is only simple equality conditions */
+} query_analysis_t;
+
+/* Analyze a query filter for index usage potential */
+query_analysis_t* _analyze_query_for_index(const bson_t *filter);
+void _free_query_analysis(query_analysis_t *analysis);
+
+/* Find the best index for a query (returns NULL if no suitable index) */
+mongolite_cached_index_t* _find_best_index(mongolite_db_t *db, const char *collection,
+                                            const query_analysis_t *analysis,
+                                            gerror_t *error);
+
+/* Use index to find documents matching a simple equality query */
+bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
+                              wtree_tree_t *col_tree,
+                              mongolite_cached_index_t *index,
+                              const bson_t *filter, gerror_t *error);
+
+/* ============================================================
+ * Internal Index Maintenance (Phase 3)
+ * ============================================================ */
+
+/* Maintain indexes after document insert (call within transaction) */
+int _mongolite_index_insert(mongolite_db_t *db, wtree_txn_t *txn,
+                             const char *collection, const bson_t *doc,
+                             gerror_t *error);
+
+/* Maintain indexes after document delete (call within transaction) */
+int _mongolite_index_delete(mongolite_db_t *db, wtree_txn_t *txn,
+                             const char *collection, const bson_t *doc,
+                             gerror_t *error);
+
+/* Maintain indexes after document update (call within transaction)
+ * old_doc: the document before update
+ * new_doc: the document after update */
+int _mongolite_index_update(mongolite_db_t *db, wtree_txn_t *txn,
+                             const char *collection,
+                             const bson_t *old_doc, const bson_t *new_doc,
+                             gerror_t *error);
 
 /* ============================================================
  * Internal Collection Operations

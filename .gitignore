@@ -10,8 +10,12 @@ RelWithDebInfo/
 
 todo
 
-# Test folders
+# Test and benchmark folders
 test_*/
+tests/test_*/
+Testing/
+
+bench_*/
 
 # Object files
 *.o

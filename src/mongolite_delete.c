@@ -20,51 +20,40 @@
 MONGOLITE_HOT
 int mongolite_delete_one(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, gerror_t *error) {
-    if (MONGOLITE_UNLIKELY(!db || !collection)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
-        return -1;
-    }
+    VALIDATE_DB_COLLECTION(db, collection, error, -1);
 
-    /* OPTIMIZATION: Check for direct _id lookup */
+    /* We need to find the document first (for index maintenance) */
     bson_oid_t doc_id;
-    bool found_by_id = false;
+    bson_t *doc_to_delete = NULL;
 
     if (MONGOLITE_LIKELY(_mongolite_is_id_query(filter, &doc_id))) {
-        /* Fast path: we already have the _id, just verify it exists */
+        /* Fast path: direct _id lookup */
         _mongolite_lock(db);
         wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
         if (MONGOLITE_LIKELY(tree)) {
-            bson_t *existing = _mongolite_find_by_id(db, tree, &doc_id, error);
-            if (existing) {
-                bson_destroy(existing);
-                found_by_id = true;
-            }
+            doc_to_delete = _mongolite_find_by_id(db, tree, &doc_id, error);
         }
         /* Keep lock for delete operation below */
     } else {
         /* Slow path: full scan to find document */
-        bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
-        if (MONGOLITE_UNLIKELY(!existing)) {
+        doc_to_delete = mongolite_find_one(db, collection, filter, NULL, error);
+        if (MONGOLITE_UNLIKELY(!doc_to_delete)) {
             /* No match found - not an error */
             return 0;
         }
 
         /* Extract _id */
-        bson_iter_t id_iter;
-        if (MONGOLITE_UNLIKELY(!bson_iter_init_find(&id_iter, existing, "_id"))) {
-            bson_destroy(existing);
-            set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR, "Document missing _id");
+        if (MONGOLITE_UNLIKELY(!extract_doc_oid_with_error(doc_to_delete, &doc_id, error))) {
+            bson_destroy(doc_to_delete);
             return -1;
         }
-        bson_oid_copy(bson_iter_oid(&id_iter), &doc_id);
-        bson_destroy(existing);
 
         /* Lock database for delete */
         _mongolite_lock(db);
     }
 
-    /* If fast path didn't find document, unlock and return */
-    if (_mongolite_is_id_query(filter, NULL) && !found_by_id) {
+    /* If document wasn't found, unlock and return */
+    if (!doc_to_delete) {
         _mongolite_unlock(db);
         return 0;  /* No match found - not an error */
     }
@@ -72,27 +61,45 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
     /* Get collection tree */
     wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (MONGOLITE_UNLIKELY(!tree)) {
+        bson_destroy(doc_to_delete);
         _mongolite_unlock(db);
         return -1;
     }
 
+    /* Pre-load index cache before starting transaction (avoids read txn inside write txn) */
+    size_t index_count = 0;
+    (void)_mongolite_get_cached_indexes(db, collection, &index_count, error);
+
     /* Begin transaction */
     wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) {
+        bson_destroy(doc_to_delete);
+        _mongolite_unlock(db);
+        return -1;
+    }
+
+    /* Maintain secondary indexes (delete from indexes before deleting doc) */
+    int rc = _mongolite_index_delete(db, txn, collection, doc_to_delete, error);
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
+        bson_destroy(doc_to_delete);
+        _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
         return -1;
     }
 
     /* Delete document */
     bool deleted = false;
-    int rc = wtree_delete_one_txn(txn, tree,
-                                   doc_id.bytes, sizeof(doc_id.bytes),
-                                   &deleted, error);
+    rc = wtree_delete_one_txn(txn, tree,
+                               doc_id.bytes, sizeof(doc_id.bytes),
+                               &deleted, error);
     if (MONGOLITE_UNLIKELY(rc != 0)) {
+        bson_destroy(doc_to_delete);
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
         return -1;
     }
+
+    bson_destroy(doc_to_delete);
 
     /* Update doc count within the same transaction for atomicity */
     if (deleted) {
@@ -122,6 +129,12 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
     return 0;
 }
 
+/* Helper struct to store document info for deletion */
+typedef struct {
+    bson_oid_t id;
+    bson_t *doc;  /* Full document (for index maintenance) */
+} delete_info_t;
+
 /* ============================================================
  * Delete many documents
  * ============================================================ */
@@ -130,10 +143,7 @@ MONGOLITE_HOT
 int mongolite_delete_many(mongolite_db_t *db, const char *collection,
                           const bson_t *filter, int64_t *deleted_count,
                           gerror_t *error) {
-    if (MONGOLITE_UNLIKELY(!db || !collection)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
-        return -1;
-    }
+    VALIDATE_DB_COLLECTION(db, collection, error, -1);
 
     if (deleted_count) {
         *deleted_count = 0;
@@ -148,6 +158,10 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         _mongolite_unlock(db);
         return -1;
     }
+
+    /* Pre-load index cache before starting transaction (avoids read txn inside write txn) */
+    size_t index_count = 0;
+    (void)_mongolite_get_cached_indexes(db, collection, &index_count, error);
 
     /* Begin transaction */
     wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
@@ -165,13 +179,13 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Collect all _ids to delete (can't delete while iterating) */
-    bson_oid_t *ids = NULL;
-    size_t n_ids = 0;
-    size_t ids_capacity = 16;
+    /* Collect all documents to delete (need full docs for index maintenance) */
+    delete_info_t *docs = NULL;
+    size_t n_docs = 0;
+    size_t docs_capacity = 16;
 
-    ids = malloc(sizeof(bson_oid_t) * ids_capacity);
-    if (MONGOLITE_UNLIKELY(!ids)) {
+    docs = malloc(sizeof(delete_info_t) * docs_capacity);
+    if (MONGOLITE_UNLIKELY(!docs)) {
         mongolite_cursor_destroy(cursor);
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
@@ -180,42 +194,75 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
     }
 
     const bson_t *doc;
+    bson_oid_t oid;
     while (MONGOLITE_LIKELY(mongolite_cursor_next(cursor, &doc))) {
-        /* Extract _id */
-        bson_iter_t id_iter;
-        if (MONGOLITE_UNLIKELY(!bson_iter_init_find(&id_iter, doc, "_id"))) {
-            continue;
-        }
+        /* Extract _id - skip documents without valid OID */
+        EXTRACT_OID_OR_CONTINUE(doc, oid);
 
         /* Expand array if needed */
-        if (MONGOLITE_UNLIKELY(n_ids >= ids_capacity)) {
-            ids_capacity *= 2;
-            bson_oid_t *new_ids = realloc(ids, sizeof(bson_oid_t) * ids_capacity);
-            if (MONGOLITE_UNLIKELY(!new_ids)) {
-                free(ids);
+        if (MONGOLITE_UNLIKELY(n_docs >= docs_capacity)) {
+            docs_capacity *= 2;
+            delete_info_t *new_docs = realloc(docs, sizeof(delete_info_t) * docs_capacity);
+            if (MONGOLITE_UNLIKELY(!new_docs)) {
+                /* Free already collected docs */
+                for (size_t j = 0; j < n_docs; j++) {
+                    bson_destroy(docs[j].doc);
+                }
+                free(docs);
                 mongolite_cursor_destroy(cursor);
                 _mongolite_abort_if_auto(db, txn);
                 _mongolite_unlock(db);
                 set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
                 return -1;
             }
-            ids = new_ids;
+            docs = new_docs;
         }
 
-        bson_oid_copy(bson_iter_oid(&id_iter), &ids[n_ids++]);
+        bson_oid_copy(&oid, &docs[n_docs].id);
+        docs[n_docs].doc = bson_copy(doc);
+        if (MONGOLITE_UNLIKELY(!docs[n_docs].doc)) {
+            for (size_t j = 0; j < n_docs; j++) {
+                bson_destroy(docs[j].doc);
+            }
+            free(docs);
+            mongolite_cursor_destroy(cursor);
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
+            return -1;
+        }
+        n_docs++;
     }
 
     mongolite_cursor_destroy(cursor);
 
-    /* Now delete all collected _ids */
+    /* Now delete all collected documents */
     int64_t count = 0;
-    for (size_t i = 0; i < n_ids; i++) {
-        bool deleted = false;
-        int rc = wtree_delete_one_txn(txn, tree,
-                                       ids[i].bytes, sizeof(ids[i].bytes),
-                                       &deleted, error);
+    int rc = 0;
+
+    for (size_t i = 0; i < n_docs; i++) {
+        /* Maintain secondary indexes first */
+        rc = _mongolite_index_delete(db, txn, collection, docs[i].doc, error);
         if (MONGOLITE_UNLIKELY(rc != 0)) {
-            free(ids);
+            for (size_t j = 0; j < n_docs; j++) {
+                bson_destroy(docs[j].doc);
+            }
+            free(docs);
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            return -1;
+        }
+
+        /* Delete the document */
+        bool deleted = false;
+        rc = wtree_delete_one_txn(txn, tree,
+                                   docs[i].id.bytes, sizeof(docs[i].id.bytes),
+                                   &deleted, error);
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            for (size_t j = 0; j < n_docs; j++) {
+                bson_destroy(docs[j].doc);
+            }
+            free(docs);
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
             return -1;
@@ -226,10 +273,13 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         }
     }
 
-    free(ids);
+    /* Free collected documents */
+    for (size_t i = 0; i < n_docs; i++) {
+        bson_destroy(docs[i].doc);
+    }
+    free(docs);
 
     /* Update doc count within the same transaction for atomicity */
-    int rc = 0;
     if (MONGOLITE_LIKELY(count > 0)) {
         rc = _mongolite_update_doc_count_txn(db, txn, collection, -count, error);
         if (MONGOLITE_UNLIKELY(rc != 0)) {

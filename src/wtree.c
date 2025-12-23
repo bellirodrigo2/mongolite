@@ -35,6 +35,7 @@ struct wtree_tree_t {
     wtree_db_t *db;
     MDB_cmp_func *cmp_func;
     MDB_cmp_func *dup_cmp_func;
+    unsigned int flags;  /* Creation flags (MDB_DUPSORT, etc.) */
 };
 
 struct wtree_iterator_t {
@@ -248,7 +249,8 @@ wtree_tree_t* wtree_tree_create(wtree_db_t *db, const char *name, unsigned int f
     tree->db = db;
     tree->cmp_func = NULL;
     tree->dup_cmp_func = NULL;
-    
+    tree->flags = flags;
+
     return tree;
 }
 
@@ -461,27 +463,31 @@ bool wtree_txn_is_readonly(wtree_txn_t *txn) {
 
 // ============= Data Operations (With Transaction) =============
 
-int wtree_insert_one_txn(wtree_txn_t *txn, wtree_tree_t *tree, 
+int wtree_insert_one_txn(wtree_txn_t *txn, wtree_tree_t *tree,
                         const void *key, size_t key_size,
                         const void *value, size_t value_size, gerror_t *error) {
     if (!txn || !tree || !key || !value) {
         set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
-    
+
     if (!txn->is_write) {
         set_error(error, WTREE_LIB, EINVAL, "Write operation requires write transaction");
         return -1;
     }
-    
+
     MDB_val mkey = {.mv_size = key_size, .mv_data = (void*)key};
     MDB_val mval = {.mv_size = value_size, .mv_data = (void*)value};
-    
-    int rc = mdb_put(txn->txn, tree->dbi, &mkey, &mval, MDB_NOOVERWRITE);
+
+    /* For DUPSORT trees, use MDB_NODUPDATA (fails only if key+value exists)
+     * For regular trees, use MDB_NOOVERWRITE (fails if key exists) */
+    unsigned int put_flags = (tree->flags & MDB_DUPSORT) ? MDB_NODUPDATA : MDB_NOOVERWRITE;
+
+    int rc = mdb_put(txn->txn, tree->dbi, &mkey, &mval, put_flags);
     if (rc != 0) {
         return translate_mdb_error(rc, error);
     }
-    
+
     return 0;
 }
 
@@ -535,32 +541,66 @@ int wtree_update_txn(wtree_txn_t *txn, wtree_tree_t *tree,
 }
 
 int wtree_delete_one_txn(wtree_txn_t *txn, wtree_tree_t *tree,
-                         const void *key, size_t key_size, 
+                         const void *key, size_t key_size,
                          bool *deleted, gerror_t *error) {
     if (!txn || !tree || !key) {
         set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
         return -1;
     }
-    
+
     if (!txn->is_write) {
         set_error(error, WTREE_LIB, EINVAL, "Write operation requires write transaction");
         return -1;
     }
-    
+
     MDB_val mkey = {.mv_size = key_size, .mv_data = (void*)key};
-    
+
     int rc = mdb_del(txn->txn, tree->dbi, &mkey, NULL);
-    
+
     if (rc == MDB_NOTFOUND) {
         // Not an error - key just doesn't exist
         if (deleted) *deleted = false;
         return 0;
     }
-    
+
     if (rc != 0) {
         return translate_mdb_error(rc, error);
     }
-    
+
+    if (deleted) *deleted = true;
+    return 0;
+}
+
+int wtree_delete_dup_txn(wtree_txn_t *txn, wtree_tree_t *tree,
+                         const void *key, size_t key_size,
+                         const void *value, size_t value_size,
+                         bool *deleted, gerror_t *error) {
+    if (!txn || !tree || !key || !value) {
+        set_error(error, WTREE_LIB, EINVAL, "Invalid parameters");
+        return -1;
+    }
+
+    if (!txn->is_write) {
+        set_error(error, WTREE_LIB, EINVAL, "Write operation requires write transaction");
+        return -1;
+    }
+
+    MDB_val mkey = {.mv_size = key_size, .mv_data = (void*)key};
+    MDB_val mval = {.mv_size = value_size, .mv_data = (void*)value};
+
+    /* For DUPSORT trees, passing value to mdb_del deletes only that specific pair */
+    int rc = mdb_del(txn->txn, tree->dbi, &mkey, &mval);
+
+    if (rc == MDB_NOTFOUND) {
+        // Not an error - key+value pair just doesn't exist
+        if (deleted) *deleted = false;
+        return 0;
+    }
+
+    if (rc != 0) {
+        return translate_mdb_error(rc, error);
+    }
+
     if (deleted) *deleted = true;
     return 0;
 }

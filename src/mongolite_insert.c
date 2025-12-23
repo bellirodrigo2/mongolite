@@ -15,6 +15,60 @@
 
 #define MONGOLITE_LIB "mongolite"
 
+/* Maximum resize attempts to prevent infinite loops */
+#define MONGOLITE_MAX_RESIZE_ATTEMPTS 3
+
+/*
+ * Optional compile-time limit for maximum database size after auto-resize.
+ * Define MONGOLITE_MAX_DB_SIZE to a byte value to enforce a limit.
+ * If not defined or set to 0, only overflow is checked (no artificial limit).
+ *
+ * Example: -DMONGOLITE_MAX_DB_SIZE=1099511627776ULL  (1TB)
+ */
+#ifndef MONGOLITE_MAX_DB_SIZE
+#define MONGOLITE_MAX_DB_SIZE 0
+#endif
+
+/* ============================================================
+ * Internal: Try to resize database on MDB_MAP_FULL
+ *
+ * Doubles the current mapsize. Returns 0 on success.
+ * Should only be called when no transactions are active.
+ * ============================================================ */
+int _mongolite_try_resize(mongolite_db_t *db, gerror_t *error) {
+    if (!db || !db->wdb) {
+        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
+                 "Invalid database handle");
+        return MONGOLITE_EINVAL;
+    }
+
+    size_t current_size = wtree_db_get_mapsize(db->wdb);
+    size_t new_size = current_size * 2;
+
+    /* Check for overflow */
+    if (new_size < current_size) {
+        set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR,
+                 "Database size overflow");
+        return MONGOLITE_ERROR;
+    }
+
+#if MONGOLITE_MAX_DB_SIZE > 0
+    /* Check compile-time size limit */
+    if (new_size > (size_t)MONGOLITE_MAX_DB_SIZE) {
+        set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR,
+                 "Database would exceed maximum size limit");
+        return MONGOLITE_ERROR;
+    }
+#endif
+
+    int rc = wtree_db_resize(db->wdb, new_size, error);
+    if (rc == 0) {
+        db->max_bytes = new_size;
+    }
+
+    return rc;
+}
+
 /* ============================================================
  * Internal: Ensure document has _id field
  *
@@ -64,6 +118,13 @@ static bson_t* _ensure_id(const bson_t *doc, bson_oid_t *out_id, bool *was_gener
 }
 
 /* ============================================================
+ * Internal: Check if error is MAP_FULL (needs resize)
+ * ============================================================ */
+static inline bool _is_map_full_error(int rc) {
+    return (rc == WTREE_MAP_FULL || rc == MDB_MAP_FULL);
+}
+
+/* ============================================================
  * Insert One
  * ============================================================ */
 
@@ -71,11 +132,7 @@ MONGOLITE_HOT
 int mongolite_insert_one(mongolite_db_t *db, const char *collection,
                           const bson_t *doc, bson_oid_t *inserted_id,
                           gerror_t *error) {
-    if (MONGOLITE_UNLIKELY(!db || !collection || !doc)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
-                 "Database, collection, and document are required");
-        return MONGOLITE_EINVAL;
-    }
+    VALIDATE_DB_COLLECTION_DOC(db, collection, doc, error, MONGOLITE_EINVAL);
 
     _mongolite_lock(db);
 
@@ -88,6 +145,12 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
         return MONGOLITE_ERROR;
     }
 
+    /* Pre-load index cache before starting transaction (avoids read txn inside write txn) */
+    size_t index_count = 0;
+    mongolite_cached_index_t *indexes = _mongolite_get_cached_indexes(db, collection, &index_count, error);
+    /* indexes may be NULL if no secondary indexes - that's fine */
+    (void)indexes;
+
     /* Ensure document has _id */
     bson_oid_t oid;
     bool id_generated = false;
@@ -99,42 +162,86 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
         return MONGOLITE_ENOMEM;
     }
 
-    /* Begin transaction */
-    wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (MONGOLITE_UNLIKELY(!txn)) {
-        if (id_generated) bson_destroy(final_doc);
-        _mongolite_unlock(db);
-        return MONGOLITE_ERROR;
-    }
+    int rc = MONGOLITE_OK;
+    int resize_attempts = 0;
 
-    /* Insert: key = OID (12 bytes), value = BSON document */
-    int rc = wtree_insert_one_txn(txn, tree,
+retry_insert:
+    /* Begin transaction */
+    {
+        wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
+        if (MONGOLITE_UNLIKELY(!txn)) {
+            if (id_generated) bson_destroy(final_doc);
+            _mongolite_unlock(db);
+            return MONGOLITE_ERROR;
+        }
+
+        /* Insert: key = OID (12 bytes), value = BSON document */
+        rc = wtree_insert_one_txn(txn, tree,
                                    oid.bytes, sizeof(oid.bytes),
                                    bson_get_data(final_doc), final_doc->len,
                                    error);
 
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        _mongolite_abort_if_auto(db, txn);
-        if (id_generated) bson_destroy(final_doc);
-        _mongolite_unlock(db);
-        return rc;
-    }
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            _mongolite_abort_if_auto(db, txn);
 
-    /* Update doc count within the same transaction for atomicity */
-    rc = _mongolite_update_doc_count_txn(db, txn, collection, 1, error);
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        _mongolite_abort_if_auto(db, txn);
-        if (id_generated) bson_destroy(final_doc);
-        _mongolite_unlock(db);
-        return rc;
-    }
+            /* Check if we can retry with a resize */
+            if (_is_map_full_error(rc) && resize_attempts < MONGOLITE_MAX_RESIZE_ATTEMPTS) {
+                resize_attempts++;
+                gerror_t resize_error = {0};
+                if (_mongolite_try_resize(db, &resize_error) == 0) {
+                    /* Clear the previous error and retry */
+                    if (error) {
+                        error->code = 0;
+                        error->message[0] = '\0';
+                    }
+                    goto retry_insert;
+                }
+                /* Resize failed - keep original error */
+            }
 
-    /* Commit */
-    rc = _mongolite_commit_if_auto(db, txn, error);
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        if (id_generated) bson_destroy(final_doc);
-        _mongolite_unlock(db);
-        return rc;
+            if (id_generated) bson_destroy(final_doc);
+            _mongolite_unlock(db);
+            return rc;
+        }
+
+        /* Maintain secondary indexes */
+        rc = _mongolite_index_insert(db, txn, collection, final_doc, error);
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            _mongolite_abort_if_auto(db, txn);
+            if (id_generated) bson_destroy(final_doc);
+            _mongolite_unlock(db);
+            return rc;
+        }
+
+        /* Update doc count within the same transaction for atomicity */
+        rc = _mongolite_update_doc_count_txn(db, txn, collection, 1, error);
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            _mongolite_abort_if_auto(db, txn);
+            if (id_generated) bson_destroy(final_doc);
+            _mongolite_unlock(db);
+            return rc;
+        }
+
+        /* Commit */
+        rc = _mongolite_commit_if_auto(db, txn, error);
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            /* Check if commit failed due to MAP_FULL */
+            if (_is_map_full_error(rc) && resize_attempts < MONGOLITE_MAX_RESIZE_ATTEMPTS) {
+                resize_attempts++;
+                gerror_t resize_error = {0};
+                if (_mongolite_try_resize(db, &resize_error) == 0) {
+                    if (error) {
+                        error->code = 0;
+                        error->message[0] = '\0';
+                    }
+                    goto retry_insert;
+                }
+            }
+
+            if (id_generated) bson_destroy(final_doc);
+            _mongolite_unlock(db);
+            return rc;
+        }
     }
 
     /* Return inserted _id */
@@ -160,11 +267,8 @@ MONGOLITE_HOT
 int mongolite_insert_many(mongolite_db_t *db, const char *collection,
                            const bson_t **docs, size_t n_docs,
                            bson_oid_t **inserted_ids, gerror_t *error) {
-    if (MONGOLITE_UNLIKELY(!db || !collection || !docs || n_docs == 0)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
-                 "Database, collection, and documents are required");
-        return MONGOLITE_EINVAL;
-    }
+    VALIDATE_PARAMS(db && collection && docs && n_docs > 0, error,
+                   "Database, collection, and documents are required", MONGOLITE_EINVAL);
 
     _mongolite_lock(db);
 
@@ -176,6 +280,11 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
         /* Return generic error - check gerror for details */
         return MONGOLITE_ERROR;
     }
+
+    /* Pre-load index cache before starting transaction (avoids read txn inside write txn) */
+    size_t index_count = 0;
+    mongolite_cached_index_t *indexes = _mongolite_get_cached_indexes(db, collection, &index_count, error);
+    (void)indexes;
 
     /* Allocate array for OIDs if requested */
     bson_oid_t *oids = NULL;
@@ -189,103 +298,150 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
         }
     }
 
-    /* Begin transaction */
-    wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (MONGOLITE_UNLIKELY(!txn)) {
-        free(oids);
-        _mongolite_unlock(db);
-        return MONGOLITE_ERROR;
-    }
-
-    /* Track documents that need cleanup */
-    bson_t **generated_docs = calloc(n_docs, sizeof(bson_t*));
-    if (MONGOLITE_UNLIKELY(!generated_docs)) {
-        _mongolite_abort_if_auto(db, txn);
-        free(oids);
-        _mongolite_unlock(db);
-        set_error(error, "system", MONGOLITE_ENOMEM,
-                 "Failed to allocate tracking array");
-        return MONGOLITE_ENOMEM;
-    }
-
-    size_t inserted = 0;
     int rc = MONGOLITE_OK;
+    int resize_attempts = 0;
 
-    for (size_t i = 0; i < n_docs; i++) {
-        if (MONGOLITE_UNLIKELY(!docs[i])) continue;
+retry_insert_many:
+    {
+        /* Begin transaction */
+        wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
+        if (MONGOLITE_UNLIKELY(!txn)) {
+            free(oids);
+            _mongolite_unlock(db);
+            return MONGOLITE_ERROR;
+        }
 
-        bson_oid_t oid;
-        bool id_generated = false;
-        bson_t *final_doc = _ensure_id(docs[i], &oid, &id_generated);
-
-        if (MONGOLITE_UNLIKELY(!final_doc)) {
-            rc = MONGOLITE_ENOMEM;
+        /* Track documents that need cleanup */
+        bson_t **generated_docs = calloc(n_docs, sizeof(bson_t*));
+        if (MONGOLITE_UNLIKELY(!generated_docs)) {
+            _mongolite_abort_if_auto(db, txn);
+            free(oids);
+            _mongolite_unlock(db);
             set_error(error, "system", MONGOLITE_ENOMEM,
-                     "Failed to prepare document %zu", i);
-            break;
+                     "Failed to allocate tracking array");
+            return MONGOLITE_ENOMEM;
         }
 
-        if (id_generated) {
-            generated_docs[i] = final_doc;
+        size_t inserted = 0;
+        rc = MONGOLITE_OK;
+
+        for (size_t i = 0; i < n_docs; i++) {
+            if (MONGOLITE_UNLIKELY(!docs[i])) continue;
+
+            bson_oid_t oid;
+            bool id_generated = false;
+            bson_t *final_doc = _ensure_id(docs[i], &oid, &id_generated);
+
+            if (MONGOLITE_UNLIKELY(!final_doc)) {
+                rc = MONGOLITE_ENOMEM;
+                set_error(error, "system", MONGOLITE_ENOMEM,
+                         "Failed to prepare document %zu", i);
+                break;
+            }
+
+            if (id_generated) {
+                generated_docs[i] = final_doc;
+            }
+
+            rc = wtree_insert_one_txn(txn, tree,
+                                       oid.bytes, sizeof(oid.bytes),
+                                       bson_get_data(final_doc), final_doc->len,
+                                       error);
+
+            if (MONGOLITE_UNLIKELY(rc != 0)) {
+                break;
+            }
+
+            /* Maintain secondary indexes */
+            rc = _mongolite_index_insert(db, txn, collection, final_doc, error);
+            if (MONGOLITE_UNLIKELY(rc != 0)) {
+                break;
+            }
+
+            if (oids) {
+                bson_oid_copy(&oid, &oids[i]);
+            }
+
+            inserted++;
         }
 
-        rc = wtree_insert_one_txn(txn, tree,
-                                   oid.bytes, sizeof(oid.bytes),
-                                   bson_get_data(final_doc), final_doc->len,
-                                   error);
+        /* Cleanup generated docs */
+        for (size_t i = 0; i < n_docs; i++) {
+            if (generated_docs[i]) {
+                bson_destroy(generated_docs[i]);
+            }
+        }
+        free(generated_docs);
 
         if (MONGOLITE_UNLIKELY(rc != 0)) {
-            break;
+            _mongolite_abort_if_auto(db, txn);
+
+            /* Check if we can retry with a resize */
+            if (_is_map_full_error(rc) && resize_attempts < MONGOLITE_MAX_RESIZE_ATTEMPTS) {
+                resize_attempts++;
+                gerror_t resize_error = {0};
+                if (_mongolite_try_resize(db, &resize_error) == 0) {
+                    /* Clear error and retry from beginning */
+                    if (error) {
+                        error->code = 0;
+                        error->message[0] = '\0';
+                    }
+                    /* Reset oids array for retry */
+                    if (oids) {
+                        memset(oids, 0, n_docs * sizeof(bson_oid_t));
+                    }
+                    goto retry_insert_many;
+                }
+            }
+
+            free(oids);
+            _mongolite_unlock(db);
+            return rc;
         }
 
-        if (oids) {
-            bson_oid_copy(&oid, &oids[i]);
+        /* Update doc count within the same transaction for atomicity */
+        rc = _mongolite_update_doc_count_txn(db, txn, collection, (int64_t)inserted, error);
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            _mongolite_abort_if_auto(db, txn);
+            free(oids);
+            _mongolite_unlock(db);
+            return rc;
         }
 
-        inserted++;
-    }
+        /* Commit */
+        rc = _mongolite_commit_if_auto(db, txn, error);
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            /* Check if commit failed due to MAP_FULL */
+            if (_is_map_full_error(rc) && resize_attempts < MONGOLITE_MAX_RESIZE_ATTEMPTS) {
+                resize_attempts++;
+                gerror_t resize_error = {0};
+                if (_mongolite_try_resize(db, &resize_error) == 0) {
+                    if (error) {
+                        error->code = 0;
+                        error->message[0] = '\0';
+                    }
+                    if (oids) {
+                        memset(oids, 0, n_docs * sizeof(bson_oid_t));
+                    }
+                    goto retry_insert_many;
+                }
+            }
 
-    /* Cleanup generated docs */
-    for (size_t i = 0; i < n_docs; i++) {
-        if (generated_docs[i]) {
-            bson_destroy(generated_docs[i]);
+            free(oids);
+            _mongolite_unlock(db);
+            return rc;
         }
-    }
-    free(generated_docs);
 
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        _mongolite_abort_if_auto(db, txn);
-        free(oids);
-        _mongolite_unlock(db);
-        return rc;
-    }
+        /* Return OIDs */
+        if (inserted_ids) {
+            *inserted_ids = oids;
+        } else {
+            free(oids);
+        }
 
-    /* Update doc count within the same transaction for atomicity */
-    rc = _mongolite_update_doc_count_txn(db, txn, collection, (int64_t)inserted, error);
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        _mongolite_abort_if_auto(db, txn);
-        free(oids);
-        _mongolite_unlock(db);
-        return rc;
+        /* Update db state */
+        db->changes = (int)inserted;
     }
-
-    /* Commit */
-    rc = _mongolite_commit_if_auto(db, txn, error);
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        free(oids);
-        _mongolite_unlock(db);
-        return rc;
-    }
-
-    /* Return OIDs */
-    if (inserted_ids) {
-        *inserted_ids = oids;
-    } else {
-        free(oids);
-    }
-
-    /* Update db state */
-    db->changes = (int)inserted;
 
     _mongolite_unlock(db);
     return MONGOLITE_OK;
@@ -298,17 +454,11 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 int mongolite_insert_one_json(mongolite_db_t *db, const char *collection,
                                const char *json_str, bson_oid_t *inserted_id,
                                gerror_t *error) {
-    if (MONGOLITE_UNLIKELY(!db || !collection || !json_str)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
-                 "Database, collection, and JSON string are required");
-        return MONGOLITE_EINVAL;
-    }
+    VALIDATE_PARAMS(db && collection && json_str, error,
+                   "Database, collection, and JSON string are required", MONGOLITE_EINVAL);
 
-    bson_error_t bson_err;
-    bson_t *doc = bson_new_from_json((const uint8_t*)json_str, -1, &bson_err);
+    bson_t *doc = parse_json_to_bson(json_str, error);
     if (MONGOLITE_UNLIKELY(!doc)) {
-        set_error(error, "libbson", MONGOLITE_EINVAL,
-                 "Invalid JSON: %s", bson_err.message);
         return MONGOLITE_EINVAL;
     }
 
@@ -325,11 +475,8 @@ int mongolite_insert_one_json(mongolite_db_t *db, const char *collection,
 int mongolite_insert_many_json(mongolite_db_t *db, const char *collection,
                                 const char **json_strs, size_t n_docs,
                                 bson_oid_t **inserted_ids, gerror_t *error) {
-    if (MONGOLITE_UNLIKELY(!db || !collection || !json_strs || n_docs == 0)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
-                 "Database, collection, and JSON strings are required");
-        return MONGOLITE_EINVAL;
-    }
+    VALIDATE_PARAMS(db && collection && json_strs && n_docs > 0, error,
+                   "Database, collection, and JSON strings are required", MONGOLITE_EINVAL);
 
     /* Parse all JSON strings */
     bson_t **docs = calloc(n_docs, sizeof(bson_t*));
@@ -339,16 +486,13 @@ int mongolite_insert_many_json(mongolite_db_t *db, const char *collection,
         return MONGOLITE_ENOMEM;
     }
 
-    bson_error_t bson_err;
     int rc = MONGOLITE_OK;
 
     for (size_t i = 0; i < n_docs; i++) {
         if (MONGOLITE_UNLIKELY(!json_strs[i])) continue;
 
-        docs[i] = bson_new_from_json((const uint8_t*)json_strs[i], -1, &bson_err);
+        docs[i] = parse_json_to_bson(json_strs[i], error);
         if (MONGOLITE_UNLIKELY(!docs[i])) {
-            set_error(error, "libbson", MONGOLITE_EINVAL,
-                     "Invalid JSON at index %zu: %s", i, bson_err.message);
             rc = MONGOLITE_EINVAL;
             break;
         }

@@ -360,6 +360,176 @@ BENCHMARK_REGISTER_F(MongoliteFixture, BM_InsertAtScale)
     ->Iterations(1000);
 
 // ============================================================
+// Fixture: Database with secondary index
+// ============================================================
+
+class IndexedInsertFixture : public benchmark::Fixture {
+public:
+    mongolite_db_t* db = nullptr;
+    bench::DocumentGenerator generator;
+    std::string db_path;
+    gerror_t error;
+
+    void SetUp(const benchmark::State& state) override {
+        (void)state;
+        memset(&error, 0, sizeof(error));
+
+        db_path = "./bench_indexed_db_" + std::to_string(rand());
+        remove_directory(db_path.c_str());
+
+        db_config_t config = {0};
+        config.max_bytes = 1ULL * 1024 * 1024 * 1024;
+
+        int rc = mongolite_open(db_path.c_str(), &db, &config, &error);
+        if (rc != 0) {
+            fprintf(stderr, "Failed to open database: %s\n", error.message);
+            return;
+        }
+
+        rc = mongolite_collection_create(db, "bench", nullptr, &error);
+        if (rc != 0 && rc != -1) {
+            fprintf(stderr, "Failed to create collection: %s\n", error.message);
+        }
+
+        generator.reset(42);
+    }
+
+    void TearDown(const benchmark::State& state) override {
+        (void)state;
+        if (db) {
+            mongolite_close(db);
+            db = nullptr;
+        }
+        remove_directory(db_path.c_str());
+    }
+};
+
+// ============================================================
+// Benchmark: Insert One with secondary index (shows index maintenance overhead)
+// ============================================================
+
+BENCHMARK_DEFINE_F(IndexedInsertFixture, BM_InsertOneWithIndex)(benchmark::State& state) {
+    const int num_indexes = static_cast<int>(state.range(0));
+
+    // Create indexes before benchmarking
+    state.PauseTiming();
+    {
+        if (num_indexes >= 1) {
+            bson_t* keys = bson_new();
+            BSON_APPEND_INT32(keys, "ref_id", 1);
+            mongolite_create_index(db, "bench", keys, "ref_id_1", nullptr, &error);
+            bson_destroy(keys);
+        }
+        if (num_indexes >= 2) {
+            bson_t* keys = bson_new();
+            BSON_APPEND_INT32(keys, "email", 1);
+            mongolite_create_index(db, "bench", keys, "email_1", nullptr, &error);
+            bson_destroy(keys);
+        }
+        if (num_indexes >= 3) {
+            bson_t* keys = bson_new();
+            BSON_APPEND_INT32(keys, "age", 1);
+            mongolite_create_index(db, "bench", keys, "age_1", nullptr, &error);
+            bson_destroy(keys);
+        }
+    }
+    state.ResumeTiming();
+
+    for (auto _ : state) {
+        bench::BenchDocument doc = generator.generate();
+        bson_t* bson = bench::bench_doc_to_bson(doc);
+
+        bson_oid_t inserted_id;
+        int rc = mongolite_insert_one(db, "bench", bson, &inserted_id, &error);
+
+        bson_destroy(bson);
+
+        if (rc != 0) {
+            state.SkipWithError("Insert with index failed");
+            break;
+        }
+    }
+
+    state.SetItemsProcessed(state.iterations());
+    state.counters["indexes"] = static_cast<double>(num_indexes);
+}
+
+BENCHMARK_REGISTER_F(IndexedInsertFixture, BM_InsertOneWithIndex)
+    ->Unit(benchmark::kMicrosecond)
+    ->Arg(0)   // No secondary index (baseline)
+    ->Arg(1)   // 1 secondary index
+    ->Arg(2)   // 2 secondary indexes
+    ->Arg(3)   // 3 secondary indexes
+    ->Iterations(5000);
+
+// ============================================================
+// Benchmark: Insert Many with secondary index
+// ============================================================
+
+BENCHMARK_DEFINE_F(IndexedInsertFixture, BM_InsertManyWithIndex)(benchmark::State& state) {
+    const size_t batch_size = static_cast<size_t>(state.range(0));
+    const int num_indexes = static_cast<int>(state.range(1));
+
+    // Create indexes before benchmarking
+    state.PauseTiming();
+    {
+        if (num_indexes >= 1) {
+            bson_t* keys = bson_new();
+            BSON_APPEND_INT32(keys, "ref_id", 1);
+            mongolite_create_index(db, "bench", keys, "ref_id_1", nullptr, &error);
+            bson_destroy(keys);
+        }
+        if (num_indexes >= 2) {
+            bson_t* keys = bson_new();
+            BSON_APPEND_INT32(keys, "email", 1);
+            mongolite_create_index(db, "bench", keys, "email_1", nullptr, &error);
+            bson_destroy(keys);
+        }
+    }
+    state.ResumeTiming();
+
+    for (auto _ : state) {
+        std::vector<bench::BenchDocument> docs = generator.generate_batch(batch_size);
+        std::vector<bson_t*> bson_docs;
+        bson_docs.reserve(batch_size);
+
+        for (const auto& doc : docs) {
+            bson_docs.push_back(bench::bench_doc_to_bson(doc));
+        }
+
+        bson_oid_t* inserted_ids = nullptr;
+        int rc = mongolite_insert_many(db, "bench",
+                                       const_cast<const bson_t**>(bson_docs.data()),
+                                       batch_size, &inserted_ids, &error);
+
+        for (auto* b : bson_docs) {
+            bson_destroy(b);
+        }
+        if (inserted_ids) {
+            free(inserted_ids);
+        }
+
+        if (rc < 0) {
+            state.SkipWithError("Insert many with index failed");
+            break;
+        }
+    }
+
+    state.SetItemsProcessed(state.iterations() * batch_size);
+    state.counters["batch_size"] = static_cast<double>(batch_size);
+    state.counters["indexes"] = static_cast<double>(num_indexes);
+}
+
+BENCHMARK_REGISTER_F(IndexedInsertFixture, BM_InsertManyWithIndex)
+    ->Unit(benchmark::kMicrosecond)
+    ->Args({100, 0})   // batch 100, no index
+    ->Args({100, 1})   // batch 100, 1 index
+    ->Args({100, 2})   // batch 100, 2 indexes
+    ->Args({1000, 0})  // batch 1000, no index
+    ->Args({1000, 1})  // batch 1000, 1 index
+    ->Args({1000, 2}); // batch 1000, 2 indexes
+
+// ============================================================
 // Main (provided by benchmark::benchmark_main)
 // ============================================================
 

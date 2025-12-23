@@ -139,12 +139,18 @@ int wtree_update_txn(wtree_txn_t *txn, wtree_tree_t *tree,
 
 // Delete with existing transaction (returns 0 even if key doesn't exist)
 int wtree_delete_one_txn(wtree_txn_t *txn, wtree_tree_t *tree,
-                         const void *key, size_t key_size, 
+                         const void *key, size_t key_size,
+                         bool *deleted, gerror_t *error);
+
+// Delete a specific key+value pair from a DUPSORT tree
+int wtree_delete_dup_txn(wtree_txn_t *txn, wtree_tree_t *tree,
+                         const void *key, size_t key_size,
+                         const void *value, size_t value_size,
                          bool *deleted, gerror_t *error);
 
 // Delete multiple keys in one transaction
 int wtree_delete_many_txn(wtree_txn_t *txn, wtree_tree_t *tree,
-                          const void **keys, const size_t *key_sizes, 
+                          const void **keys, const size_t *key_sizes,
                           size_t count, size_t *deleted_count, gerror_t *error);
 
 // Get with existing transaction (zero-copy, valid only during transaction)

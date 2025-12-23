@@ -79,6 +79,15 @@ target_include_directories(test_bson_update PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_bson_update PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
 
 # ============================================================
+# mongolite_index test (index infrastructure)
+# Uses full mongolite library since Phase 2 has dependencies
+# ============================================================
+
+add_mongolite_test(test_mongolite_index)
+add_dependencies(test_mongolite_index mongolite)
+target_link_libraries(test_mongolite_index PRIVATE mongolite)
+
+# ============================================================
 # Mock wtree infrastructure for unit testing
 # ============================================================
 
@@ -97,10 +106,10 @@ set(MONGOLITE_SOURCES_NO_WTREE
     ${SRC_DIR}/mongolite_find.c
     ${SRC_DIR}/mongolite_update.c
     ${SRC_DIR}/mongolite_delete.c
+    ${SRC_DIR}/mongolite_index.c
     ${SRC_DIR}/mongolite_util.c
     ${SRC_DIR}/bson_update.c
     ${SRC_DIR}/key_compare.c
-    ${SRC_DIR}/compare_numbers.c
     ${SRC_DIR}/gerror.c
 )
 
@@ -123,14 +132,6 @@ macro(add_mocked_unit_test NAME)
     target_link_libraries(${NAME} PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
     add_test(NAME ${NAME} COMMAND ${NAME})
 endmacro()
-
-# compare_numbers test - standalone, no mocking needed
-add_mongolite_test(test_compare_numbers
-    ${SRC_DIR}/compare_numbers.c
-)
-add_dependencies(test_compare_numbers libbson)
-target_include_directories(test_compare_numbers PRIVATE ${TEST_INCLUDE_DIRS})
-target_link_libraries(test_compare_numbers PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
 
 # ============================================================
 # Mocked unit tests
@@ -158,6 +159,9 @@ add_mongolite_integration_test(test_mongolite_find)
 add_mongolite_integration_test(test_mongolite_integration)
 add_mongolite_integration_test(test_mongolite_update)
 add_mongolite_integration_test(test_mongolite_delete)
+add_mongolite_integration_test(test_mongolite_index_integration)
+add_mongolite_integration_test(test_index_maintenance)
+add_mongolite_integration_test(test_query_optimization)
 add_mongolite_integration_test(test_stress)
 
 # ============================================================
@@ -171,7 +175,7 @@ set(ALL_TEST_TARGETS
     test_key_compare
     test_bsonmatch
     test_bson_update
-    test_compare_numbers
+    test_mongolite_index
     test_mongolite_txn_mocked
     test_mongolite_cursor_mocked
     test_mongolite_insert_mocked
@@ -182,6 +186,9 @@ set(ALL_TEST_TARGETS
     test_mongolite_integration
     test_mongolite_update
     test_mongolite_delete
+    test_mongolite_index_integration
+    test_index_maintenance
+    test_query_optimization
     test_stress
 )
 

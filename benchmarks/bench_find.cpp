@@ -487,6 +487,322 @@ BENCHMARK_REGISTER_F(FindFixture, BM_FindOneJson)
     ->Unit(benchmark::kMicrosecond);
 
 // ============================================================
+// Fixture: Pre-populated database with secondary index
+// ============================================================
+
+class IndexedFindFixture : public benchmark::Fixture {
+public:
+    mongolite_db_t* db = nullptr;
+    bench::DocumentGenerator generator;
+    std::string db_path;
+    gerror_t error;
+
+    std::vector<int64_t> known_ref_ids;
+    std::vector<std::string> known_emails;
+
+    static constexpr size_t COLLECTION_SIZE = 10000;
+
+    void SetUp(const benchmark::State& state) override {
+        (void)state;
+        memset(&error, 0, sizeof(error));
+
+        db_path = "./bench_indexed_find_db_" + std::to_string(rand());
+        remove_directory(db_path.c_str());
+
+        db_config_t config = {0};
+        config.max_bytes = 1ULL * 1024 * 1024 * 1024;
+
+        int rc = mongolite_open(db_path.c_str(), &db, &config, &error);
+        if (rc != 0) {
+            fprintf(stderr, "Failed to open database: %s\n", error.message);
+            return;
+        }
+
+        rc = mongolite_collection_create(db, "bench", nullptr, &error);
+        if (rc != 0 && rc != -1) {
+            fprintf(stderr, "Failed to create collection: %s\n", error.message);
+            return;
+        }
+
+        // Pre-populate collection
+        generator.reset(42);
+        known_ref_ids.clear();
+        known_emails.clear();
+
+        const size_t batch = 1000;
+        for (size_t i = 0; i < COLLECTION_SIZE; i += batch) {
+            size_t to_insert = std::min(batch, COLLECTION_SIZE - i);
+            std::vector<bench::BenchDocument> docs = generator.generate_batch(to_insert);
+            std::vector<bson_t*> bson_docs;
+
+            for (const auto& doc : docs) {
+                bson_docs.push_back(bench::bench_doc_to_bson(doc));
+                if (known_ref_ids.size() < 100) {
+                    known_ref_ids.push_back(doc.id);
+                    known_emails.push_back(doc.email);
+                }
+            }
+
+            bson_oid_t* ids = nullptr;
+            mongolite_insert_many(db, "bench",
+                                  const_cast<const bson_t**>(bson_docs.data()),
+                                  to_insert, &ids, &error);
+
+            for (auto* b : bson_docs) bson_destroy(b);
+            if (ids) free(ids);
+        }
+
+        generator.reset(12345);
+    }
+
+    void TearDown(const benchmark::State& state) override {
+        (void)state;
+        if (db) {
+            mongolite_close(db);
+            db = nullptr;
+        }
+        remove_directory(db_path.c_str());
+    }
+};
+
+// ============================================================
+// Fixture: Pre-populated database with index on ref_id
+// ============================================================
+
+class IndexedRefIdFixture : public benchmark::Fixture {
+public:
+    mongolite_db_t* db = nullptr;
+    bench::DocumentGenerator generator;
+    std::string db_path;
+    gerror_t error;
+    std::vector<int64_t> known_ref_ids;
+
+    static constexpr size_t COLLECTION_SIZE = 10000;
+
+    void SetUp(const benchmark::State& state) override {
+        (void)state;
+        memset(&error, 0, sizeof(error));
+
+        db_path = "./bench_indexed_refid_db_" + std::to_string(rand());
+        remove_directory(db_path.c_str());
+
+        db_config_t config = {0};
+        config.max_bytes = 1ULL * 1024 * 1024 * 1024;
+
+        int rc = mongolite_open(db_path.c_str(), &db, &config, &error);
+        if (rc != 0) return;
+
+        mongolite_collection_create(db, "bench", nullptr, &error);
+
+        // Create index FIRST (empty collection is fast)
+        bson_t* keys = bson_new();
+        BSON_APPEND_INT32(keys, "ref_id", 1);
+        mongolite_create_index(db, "bench", keys, "ref_id_1", nullptr, &error);
+        bson_destroy(keys);
+
+        // Then populate
+        generator.reset(42);
+        known_ref_ids.clear();
+
+        const size_t batch = 1000;
+        for (size_t i = 0; i < COLLECTION_SIZE; i += batch) {
+            size_t to_insert = std::min(batch, COLLECTION_SIZE - i);
+            std::vector<bench::BenchDocument> docs = generator.generate_batch(to_insert);
+            std::vector<bson_t*> bson_docs;
+
+            for (const auto& doc : docs) {
+                bson_docs.push_back(bench::bench_doc_to_bson(doc));
+                if (known_ref_ids.size() < 100) {
+                    known_ref_ids.push_back(doc.id);
+                }
+            }
+
+            bson_oid_t* ids = nullptr;
+            mongolite_insert_many(db, "bench",
+                                  const_cast<const bson_t**>(bson_docs.data()),
+                                  to_insert, &ids, &error);
+
+            for (auto* b : bson_docs) bson_destroy(b);
+            if (ids) free(ids);
+        }
+    }
+
+    void TearDown(const benchmark::State& state) override {
+        (void)state;
+        if (db) {
+            mongolite_close(db);
+            db = nullptr;
+        }
+        remove_directory(db_path.c_str());
+    }
+};
+
+// ============================================================
+// Benchmark: Find One by ref_id WITH index
+// ============================================================
+
+BENCHMARK_DEFINE_F(IndexedRefIdFixture, BM_FindOneByRefIdWithIndex)(benchmark::State& state) {
+    size_t idx = 0;
+    for (auto _ : state) {
+        int64_t ref_id = known_ref_ids[idx % known_ref_ids.size()];
+        idx++;
+
+        bson_t* filter = bson_new();
+        BSON_APPEND_INT64(filter, "ref_id", ref_id);
+
+        bson_t* result = mongolite_find_one(db, "bench", filter, nullptr, &error);
+
+        bson_destroy(filter);
+        if (result) {
+            bson_destroy(result);
+        } else {
+            state.SkipWithError("Find by ref_id with index returned null");
+            break;
+        }
+    }
+
+    state.SetItemsProcessed(state.iterations());
+}
+
+BENCHMARK_REGISTER_F(IndexedRefIdFixture, BM_FindOneByRefIdWithIndex)
+    ->Unit(benchmark::kMicrosecond);
+
+// ============================================================
+// Benchmark: Find One by ref_id WITHOUT index (scan baseline)
+// Uses IndexedFindFixture which has no index
+// ============================================================
+
+BENCHMARK_DEFINE_F(IndexedFindFixture, BM_FindOneByRefIdNoIndex)(benchmark::State& state) {
+    size_t idx = 0;
+    for (auto _ : state) {
+        int64_t ref_id = known_ref_ids[idx % known_ref_ids.size()];
+        idx++;
+
+        bson_t* filter = bson_new();
+        BSON_APPEND_INT64(filter, "ref_id", ref_id);
+
+        bson_t* result = mongolite_find_one(db, "bench", filter, nullptr, &error);
+
+        bson_destroy(filter);
+        if (result) {
+            bson_destroy(result);
+        } else {
+            state.SkipWithError("Find by ref_id (scan) returned null");
+            break;
+        }
+    }
+
+    state.SetItemsProcessed(state.iterations());
+}
+
+BENCHMARK_REGISTER_F(IndexedFindFixture, BM_FindOneByRefIdNoIndex)
+    ->Unit(benchmark::kMicrosecond);
+
+// ============================================================
+// Benchmark: Index vs Scan at different collection sizes
+// ============================================================
+
+class ScaleFindFixture : public benchmark::Fixture {
+public:
+    mongolite_db_t* db = nullptr;
+    bench::DocumentGenerator generator;
+    std::string db_path;
+    gerror_t error;
+    std::vector<int64_t> known_ref_ids;
+
+    void SetUp(const benchmark::State& state) override {
+        memset(&error, 0, sizeof(error));
+        db_path = "./bench_scale_find_db_" + std::to_string(rand());
+        remove_directory(db_path.c_str());
+
+        db_config_t config = {0};
+        config.max_bytes = 1ULL * 1024 * 1024 * 1024;
+
+        mongolite_open(db_path.c_str(), &db, &config, &error);
+        mongolite_collection_create(db, "bench", nullptr, &error);
+        generator.reset(42);
+        known_ref_ids.clear();
+    }
+
+    void TearDown(const benchmark::State& state) override {
+        (void)state;
+        if (db) {
+            mongolite_close(db);
+            db = nullptr;
+        }
+        remove_directory(db_path.c_str());
+    }
+
+    void populate(size_t count) {
+        const size_t batch = 1000;
+        for (size_t i = 0; i < count; i += batch) {
+            size_t to_insert = std::min(batch, count - i);
+            std::vector<bench::BenchDocument> docs = generator.generate_batch(to_insert);
+            std::vector<bson_t*> bson_docs;
+
+            for (const auto& doc : docs) {
+                bson_docs.push_back(bench::bench_doc_to_bson(doc));
+                if (known_ref_ids.size() < 100) {
+                    known_ref_ids.push_back(doc.id);
+                }
+            }
+
+            bson_oid_t* ids = nullptr;
+            mongolite_insert_many(db, "bench",
+                                  const_cast<const bson_t**>(bson_docs.data()),
+                                  to_insert, &ids, &error);
+            for (auto* b : bson_docs) bson_destroy(b);
+            if (ids) free(ids);
+        }
+    }
+};
+
+BENCHMARK_DEFINE_F(ScaleFindFixture, BM_FindIndexVsScanAtScale)(benchmark::State& state) {
+    const size_t collection_size = static_cast<size_t>(state.range(0));
+    const bool use_index = static_cast<bool>(state.range(1));
+
+    // Create index FIRST on empty collection (fast), then populate
+    if (use_index) {
+        bson_t* keys = bson_new();
+        BSON_APPEND_INT32(keys, "ref_id", 1);
+        mongolite_create_index(db, "bench", keys, "ref_id_1", nullptr, &error);
+        bson_destroy(keys);
+    }
+
+    populate(collection_size);
+
+    size_t idx = 0;
+    for (auto _ : state) {
+        int64_t ref_id = known_ref_ids[idx % known_ref_ids.size()];
+        idx++;
+
+        bson_t* filter = bson_new();
+        BSON_APPEND_INT64(filter, "ref_id", ref_id);
+
+        bson_t* result = mongolite_find_one(db, "bench", filter, nullptr, &error);
+
+        bson_destroy(filter);
+        if (result) {
+            bson_destroy(result);
+        }
+    }
+
+    state.SetItemsProcessed(state.iterations());
+    state.counters["collection_size"] = static_cast<double>(collection_size);
+    state.counters["indexed"] = use_index ? 1.0 : 0.0;
+}
+
+BENCHMARK_REGISTER_F(ScaleFindFixture, BM_FindIndexVsScanAtScale)
+    ->Unit(benchmark::kMicrosecond)
+    ->Args({1000, 0})    // 1K docs, no index (scan)
+    ->Args({1000, 1})    // 1K docs, with index
+    ->Args({10000, 0})   // 10K docs, no index (scan)
+    ->Args({10000, 1})   // 10K docs, with index
+    ->Args({50000, 0})   // 50K docs, no index (scan)
+    ->Args({50000, 1})   // 50K docs, with index
+    ->Iterations(500);
+
+// ============================================================
 // Main
 // ============================================================
 
