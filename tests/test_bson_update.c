@@ -477,6 +477,178 @@ static void test_empty_update(void **state) {
     bson_destroy(result);
 }
 
+/* ============================================================
+ * Additional edge case tests for coverage
+ * ============================================================ */
+
+static void test_is_update_spec_null(void **state) {
+    (void)state;
+    /* NULL update should return false */
+    assert_false(bson_update_is_update_spec(NULL));
+
+    /* Empty update should return false */
+    bson_t *empty = bson_new();
+    assert_false(bson_update_is_update_spec(empty));
+    bson_destroy(empty);
+}
+
+static void test_set_empty_set_doc(void **state) {
+    (void)state;
+    /* $set with empty document - should return copy of original */
+    bson_t *doc = doc_from_json("{\"name\": \"test\", \"age\": 25}");
+    bson_t *update = doc_from_json("{\"$set\": {}}");
+
+    bson_iter_t iter;
+    bson_iter_init_find(&iter, update, "$set");
+
+    gerror_t error = {0};
+    bson_t *result = bson_update_apply_set(doc, &iter, &error);
+
+    assert_non_null(result);
+    assert_true(has_utf8_field(result, "name", "test"));
+    assert_true(has_int32_field(result, "age", 25));
+
+    bson_destroy(result);
+    bson_destroy(update);
+    bson_destroy(doc);
+}
+
+static void test_inc_empty_inc_doc(void **state) {
+    (void)state;
+    /* $inc with empty document - should return copy of original */
+    bson_t *doc = doc_from_json("{\"name\": \"test\", \"count\": 10}");
+    bson_t *update = doc_from_json("{\"$inc\": {}}");
+
+    bson_iter_t iter;
+    bson_iter_init_find(&iter, update, "$inc");
+
+    gerror_t error = {0};
+    bson_t *result = bson_update_apply_inc(doc, &iter, &error);
+
+    assert_non_null(result);
+    assert_true(has_int32_field(result, "count", 10));
+
+    bson_destroy(result);
+    bson_destroy(update);
+    bson_destroy(doc);
+}
+
+static void test_inc_int64_field(void **state) {
+    (void)state;
+    /* Test $inc with int64 values */
+    bson_t *doc = bson_new();
+    BSON_APPEND_INT64(doc, "bigcount", 1000000000000LL);
+
+    bson_t *update = bson_new();
+    bson_t inc_doc;
+    BSON_APPEND_DOCUMENT_BEGIN(update, "$inc", &inc_doc);
+    BSON_APPEND_INT64(&inc_doc, "bigcount", 5000000000LL);
+    bson_append_document_end(update, &inc_doc);
+
+    bson_iter_t iter;
+    bson_iter_init_find(&iter, update, "$inc");
+
+    gerror_t error = {0};
+    bson_t *result = bson_update_apply_inc(doc, &iter, &error);
+
+    assert_non_null(result);
+    bson_iter_t result_iter;
+    assert_true(bson_iter_init_find(&result_iter, result, "bigcount"));
+    assert_true(BSON_ITER_HOLDS_INT64(&result_iter));
+    assert_int_equal(1005000000000LL, bson_iter_int64(&result_iter));
+
+    bson_destroy(result);
+    bson_destroy(update);
+    bson_destroy(doc);
+}
+
+static void test_inc_new_int64_field(void **state) {
+    (void)state;
+    /* Test $inc creating new field with int64 value */
+    bson_t *doc = doc_from_json("{\"name\": \"test\"}");
+
+    bson_t *update = bson_new();
+    bson_t inc_doc;
+    BSON_APPEND_DOCUMENT_BEGIN(update, "$inc", &inc_doc);
+    BSON_APPEND_INT64(&inc_doc, "newcount", 9999999999LL);
+    bson_append_document_end(update, &inc_doc);
+
+    bson_iter_t iter;
+    bson_iter_init_find(&iter, update, "$inc");
+
+    gerror_t error = {0};
+    bson_t *result = bson_update_apply_inc(doc, &iter, &error);
+
+    assert_non_null(result);
+    bson_iter_t result_iter;
+    assert_true(bson_iter_init_find(&result_iter, result, "newcount"));
+    assert_true(BSON_ITER_HOLDS_INT64(&result_iter));
+    assert_int_equal(9999999999LL, bson_iter_int64(&result_iter));
+
+    bson_destroy(result);
+    bson_destroy(update);
+    bson_destroy(doc);
+}
+
+static void test_push_single_value_to_new_field(void **state) {
+    (void)state;
+    /* $push single value to new field (creates single-element array) */
+    bson_t *doc = doc_from_json("{\"name\": \"test\"}");
+    bson_t *update = doc_from_json("{\"$push\": {\"tags\": \"new\"}}");
+
+    bson_iter_t iter;
+    bson_iter_init_find(&iter, update, "$push");
+
+    gerror_t error = {0};
+    bson_t *result = bson_update_apply_push(doc, &iter, &error);
+
+    assert_non_null(result);
+    assert_true(has_field(result, "tags"));
+
+    bson_iter_t arr_iter;
+    assert_true(bson_iter_init_find(&arr_iter, result, "tags"));
+    assert_true(BSON_ITER_HOLDS_ARRAY(&arr_iter));
+
+    bson_destroy(result);
+    bson_destroy(update);
+    bson_destroy(doc);
+}
+
+static void test_build_upsert_base(void **state) {
+    (void)state;
+    /* Test bson_upsert_build_base with various filter types */
+
+    /* Simple equality filter */
+    bson_t *filter = doc_from_json("{\"name\": \"test\", \"age\": 25}");
+    bson_t *base = bson_upsert_build_base(filter);
+    assert_non_null(base);
+    assert_true(has_utf8_field(base, "name", "test"));
+    assert_true(has_int32_field(base, "age", 25));
+    bson_destroy(base);
+    bson_destroy(filter);
+
+    /* Filter with operators - operators should NOT be in base */
+    filter = doc_from_json("{\"name\": \"test\", \"age\": {\"$gt\": 18}}");
+    base = bson_upsert_build_base(filter);
+    assert_non_null(base);
+    assert_true(has_utf8_field(base, "name", "test"));
+    assert_false(has_field(base, "age"));  /* $gt shouldn't be extracted */
+    bson_destroy(base);
+    bson_destroy(filter);
+
+    /* Empty filter */
+    filter = bson_new();
+    base = bson_upsert_build_base(filter);
+    assert_non_null(base);
+    bson_destroy(base);
+    bson_destroy(filter);
+
+    /* NULL filter */
+    base = bson_upsert_build_base(NULL);
+    assert_non_null(base);
+    bson_destroy(base);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         // $set operator
@@ -509,6 +681,14 @@ int main(void) {
         cmocka_unit_test(test_id_preserved),
         // Empty update
         cmocka_unit_test(test_empty_update),
+        // Additional edge case tests
+        cmocka_unit_test(test_is_update_spec_null),
+        cmocka_unit_test(test_set_empty_set_doc),
+        cmocka_unit_test(test_inc_empty_inc_doc),
+        cmocka_unit_test(test_inc_int64_field),
+        cmocka_unit_test(test_inc_new_int64_field),
+        cmocka_unit_test(test_push_single_value_to_new_field),
+        cmocka_unit_test(test_build_upsert_base),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

@@ -129,6 +129,23 @@ bson_t* bson_update_apply(const bson_t *original, const bson_t *update, gerror_t
 MONGOLITE_PURE
 bool bson_update_is_update_spec(const bson_t *update);
 
+/**
+ * Build base document for upsert from query filter
+ *
+ * Creates a new document by extracting equality conditions from the filter.
+ * For example, filter {"name": "John", "age": 30} produces {"name": "John", "age": 30}.
+ * Operator conditions like {"age": {"$gt": 25}} are skipped.
+ *
+ * The resulting document should then have update operators applied to it,
+ * followed by _id generation if needed.
+ *
+ * @param filter  Query filter (may be NULL or empty for no base fields)
+ * @return        New document with equality conditions, or empty document.
+ *                Caller must bson_destroy(). Returns NULL on allocation failure.
+ */
+MONGOLITE_WARN_UNUSED
+bson_t* bson_upsert_build_base(const bson_t *filter);
+
 #ifdef __cplusplus
 }
 #endif

@@ -79,6 +79,15 @@ target_include_directories(test_bson_update PRIVATE ${TEST_INCLUDE_DIRS})
 target_link_libraries(test_bson_update PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
 
 # ============================================================
+# helpers test (inline helper functions)
+# ============================================================
+
+add_mongolite_test(test_helpers ${SRC_DIR}/gerror.c)
+add_dependencies(test_helpers libbson)
+target_include_directories(test_helpers PRIVATE ${TEST_INCLUDE_DIRS})
+target_link_libraries(test_helpers PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
+
+# ============================================================
 # mongolite_index test (index infrastructure)
 # Uses full mongolite library since Phase 2 has dependencies
 # ============================================================
@@ -175,6 +184,7 @@ set(ALL_TEST_TARGETS
     test_key_compare
     test_bsonmatch
     test_bson_update
+    test_helpers
     test_mongolite_index
     test_mongolite_txn_mocked
     test_mongolite_cursor_mocked

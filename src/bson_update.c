@@ -648,3 +648,57 @@ bool bson_update_is_update_spec(const bson_t *update) {
 
     return true;
 }
+
+/* ============================================================
+ * Upsert helper - build base document from filter
+ * ============================================================ */
+
+MONGOLITE_WARN_UNUSED
+bson_t* bson_upsert_build_base(const bson_t *filter) {
+    bson_t *base = bson_new();
+    if (!base) {
+        return NULL;
+    }
+
+    if (!filter || bson_empty(filter)) {
+        return base;  /* Empty base document */
+    }
+
+    bson_iter_t iter;
+    if (!bson_iter_init(&iter, filter)) {
+        return base;
+    }
+
+    while (bson_iter_next(&iter)) {
+        const char *key = bson_iter_key(&iter);
+
+        /* Skip operator keys (e.g., $or, $and) - these are logical operators */
+        if (key[0] == '$') {
+            continue;
+        }
+
+        /* Check if value is a simple value or an operator document */
+        bson_type_t type = bson_iter_type(&iter);
+
+        if (type == BSON_TYPE_DOCUMENT) {
+            /* Check if it's an operator document like {$gt: 5} */
+            bson_iter_t child;
+            if (bson_iter_recurse(&iter, &child) && bson_iter_next(&child)) {
+                const char *child_key = bson_iter_key(&child);
+                if (child_key[0] == '$') {
+                    /* It's an operator - skip this field for upsert base */
+                    continue;
+                }
+            }
+            /* It's a literal document value - include it */
+        }
+
+        /* Simple equality condition - add to base document */
+        if (!bson_append_iter(base, key, -1, &iter)) {
+            bson_destroy(base);
+            return NULL;
+        }
+    }
+
+    return base;
+}

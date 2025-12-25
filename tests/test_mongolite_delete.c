@@ -319,42 +319,42 @@ static void test_delete_complex_filter(void **state) {
 static void test_delete_data_integrity(void **state) {
     (void)state;
     cleanup_test_db();
-    
+
     mongolite_db_t *db = NULL;
     gerror_t error = {0};
-    
+
     db_config_t config = {0};
     config.max_bytes = 32ULL * 1024 * 1024;
     int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
     assert_int_equal(0, rc);
-    
+
     rc = mongolite_collection_create(db, "test", NULL, &error);
     assert_int_equal(0, rc);
-    
+
     bson_oid_t ids[10];
     for (int i = 0; i < 10; i++) {
         bson_t *doc = bson_new();
         BSON_APPEND_INT32(doc, "index", i);
         BSON_APPEND_INT32(doc, "category", i % 3);
-        
+
         rc = mongolite_insert_one(db, "test", doc, &ids[i], &error);
         assert_int_equal(0, rc);
         bson_destroy(doc);
     }
-    
+
     bson_t *filter = bson_new();
     BSON_APPEND_INT32(filter, "category", 1);
-    
+
     int64_t deleted_count = 0;
     rc = mongolite_delete_many(db, "test", filter, &deleted_count, &error);
     assert_int_equal(0, rc);
     assert_int_equal(3, deleted_count);
-    
+
     bson_destroy(filter);
-    
+
     mongolite_cursor_t *cursor = mongolite_find(db, "test", NULL, NULL, &error);
     assert_non_null(cursor);
-    
+
     int found_count = 0;
     const bson_t *doc;
     while (mongolite_cursor_next(cursor, &doc)) {
@@ -365,10 +365,207 @@ static void test_delete_data_integrity(void **state) {
         }
         found_count++;
     }
-    
+
     assert_int_equal(7, found_count);
-    
+
     mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+/* ============================================================
+ * Additional Coverage Tests
+ * ============================================================ */
+
+static void test_delete_one_by_id_not_found(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    // Create a random OID that doesn't exist
+    bson_oid_t fake_id;
+    bson_oid_init(&fake_id, NULL);
+
+    int64_t count_before = mongolite_collection_count(db, "users", NULL, &error);
+
+    bson_t *filter = bson_new();
+    BSON_APPEND_OID(filter, "_id", &fake_id);
+
+    // Delete by _id (fast path) but document doesn't exist
+    int rc = mongolite_delete_one(db, "users", filter, &error);
+    assert_int_equal(0, rc);  // Should succeed (no-op)
+
+    bson_destroy(filter);
+
+    // Count should be unchanged
+    int64_t count_after = mongolite_collection_count(db, "users", NULL, &error);
+    assert_int_equal(count_before, count_after);
+
+    mongolite_close(db);
+}
+
+static void test_delete_one_null_params(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    bson_t *filter = bson_new();
+    BSON_APPEND_UTF8(filter, "name", "Alice");
+
+    // Test with NULL db
+    int rc = mongolite_delete_one(NULL, "users", filter, &error);
+    assert_int_not_equal(0, rc);
+
+    // Test with NULL collection
+    error.code = 0;
+    rc = mongolite_delete_one(db, NULL, filter, &error);
+    assert_int_not_equal(0, rc);
+
+    bson_destroy(filter);
+    mongolite_close(db);
+}
+
+static void test_delete_many_null_params(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+    int64_t deleted_count = 0;
+
+    bson_t *filter = bson_new();
+    BSON_APPEND_UTF8(filter, "name", "Alice");
+
+    // Test with NULL db
+    int rc = mongolite_delete_many(NULL, "users", filter, &deleted_count, &error);
+    assert_int_not_equal(0, rc);
+
+    // Test with NULL collection
+    error.code = 0;
+    rc = mongolite_delete_many(db, NULL, filter, &deleted_count, &error);
+    assert_int_not_equal(0, rc);
+
+    bson_destroy(filter);
+    mongolite_close(db);
+}
+
+static void test_delete_many_null_deleted_count(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    bson_t *filter = bson_new();
+    BSON_APPEND_UTF8(filter, "city", "LA");
+
+    // Delete with NULL deleted_count parameter - should still work
+    int rc = mongolite_delete_many(db, "users", filter, NULL, &error);
+    assert_int_equal(0, rc);
+
+    bson_destroy(filter);
+
+    // Verify deletion happened
+    filter = bson_new();
+    BSON_APPEND_UTF8(filter, "city", "LA");
+    int64_t count = mongolite_collection_count(db, "users", filter, &error);
+    assert_int_equal(0, count);
+
+    bson_destroy(filter);
+    mongolite_close(db);
+}
+
+static void test_delete_one_with_null_filter(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    int64_t count_before = mongolite_collection_count(db, "users", NULL, &error);
+    assert_int_equal(5, count_before);
+
+    // Delete with NULL filter - should delete one document
+    int rc = mongolite_delete_one(db, "users", NULL, &error);
+    assert_int_equal(0, rc);
+
+    int64_t count_after = mongolite_collection_count(db, "users", NULL, &error);
+    assert_int_equal(4, count_after);
+
+    mongolite_close(db);
+}
+
+static void test_delete_many_large_batch(void **state) {
+    (void)state;
+    cleanup_test_db();
+
+    mongolite_db_t *db = NULL;
+    gerror_t error = {0};
+
+    db_config_t config = {0};
+    config.max_bytes = 64ULL * 1024 * 1024;
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
+    assert_int_equal(0, rc);
+
+    rc = mongolite_collection_create(db, "batch", NULL, &error);
+    assert_int_equal(0, rc);
+
+    // Insert more than initial capacity (16) to test array growth
+    const int NUM_DOCS = 50;
+    for (int i = 0; i < NUM_DOCS; i++) {
+        bson_t *doc = bson_new();
+        BSON_APPEND_INT32(doc, "batch", 1);
+        BSON_APPEND_INT32(doc, "index", i);
+        rc = mongolite_insert_one(db, "batch", doc, NULL, &error);
+        assert_int_equal(0, rc);
+        bson_destroy(doc);
+    }
+
+    // Delete all with batch=1 - this forces array growth in delete_many
+    bson_t *filter = bson_new();
+    BSON_APPEND_INT32(filter, "batch", 1);
+
+    int64_t deleted_count = 0;
+    rc = mongolite_delete_many(db, "batch", filter, &deleted_count, &error);
+    assert_int_equal(0, rc);
+    assert_int_equal(NUM_DOCS, deleted_count);
+
+    bson_destroy(filter);
+
+    int64_t remaining = mongolite_collection_count(db, "batch", NULL, &error);
+    assert_int_equal(0, remaining);
+
+    mongolite_close(db);
+}
+
+static void test_delete_nonexistent_collection(void **state) {
+    (void)state;
+    cleanup_test_db();
+
+    mongolite_db_t *db = NULL;
+    gerror_t error = {0};
+
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
+    assert_int_equal(0, rc);
+
+    // Try to delete from a collection that doesn't exist
+    bson_t *filter = bson_new();
+    BSON_APPEND_UTF8(filter, "name", "test");
+
+    rc = mongolite_delete_one(db, "nonexistent", filter, &error);
+    // This should either succeed (no-op) or fail gracefully
+    // depending on implementation
+
+    int64_t deleted_count = 0;
+    error.code = 0;
+    rc = mongolite_delete_many(db, "nonexistent", filter, &deleted_count, &error);
+
+    bson_destroy(filter);
     mongolite_close(db);
 }
 
@@ -384,7 +581,15 @@ int main(void) {
         cmocka_unit_test_teardown(test_delete_changes_counter, teardown),
         cmocka_unit_test_teardown(test_delete_complex_filter, teardown),
         cmocka_unit_test_teardown(test_delete_data_integrity, teardown),
+        /* Additional coverage tests */
+        cmocka_unit_test_teardown(test_delete_one_by_id_not_found, teardown),
+        cmocka_unit_test_teardown(test_delete_one_null_params, teardown),
+        cmocka_unit_test_teardown(test_delete_many_null_params, teardown),
+        cmocka_unit_test_teardown(test_delete_many_null_deleted_count, teardown),
+        cmocka_unit_test_teardown(test_delete_one_with_null_filter, teardown),
+        cmocka_unit_test_teardown(test_delete_many_large_batch, teardown),
+        cmocka_unit_test_teardown(test_delete_nonexistent_collection, teardown),
     };
-    
+
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

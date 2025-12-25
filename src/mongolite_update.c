@@ -48,9 +48,48 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
     if (MONGOLITE_UNLIKELY(!existing)) {
         /* No match found */
         if (upsert) {
-            /* TODO: Implement upsert - create new document */
-            set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Upsert not yet implemented");
-            return -1;
+            /* Build base document from filter equality conditions */
+            bson_t *base = bson_upsert_build_base(filter);
+            if (MONGOLITE_UNLIKELY(!base)) {
+                set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to build upsert base");
+                return -1;
+            }
+
+            /* Apply update operators to base document */
+            bson_t *new_doc = bson_update_apply(base, update, error);
+            bson_destroy(base);
+            if (MONGOLITE_UNLIKELY(!new_doc)) {
+                return -1;
+            }
+
+            /* Generate _id if not present */
+            bson_oid_t new_oid;
+            bson_iter_t id_iter;
+            if (!bson_iter_init_find(&id_iter, new_doc, "_id")) {
+                bson_oid_init(&new_oid, NULL);
+                bson_t *with_id = bson_new();
+                if (MONGOLITE_UNLIKELY(!with_id)) {
+                    bson_destroy(new_doc);
+                    set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate document");
+                    return -1;
+                }
+                BSON_APPEND_OID(with_id, "_id", &new_oid);
+                /* Copy all fields from new_doc */
+                bson_iter_t iter;
+                if (bson_iter_init(&iter, new_doc)) {
+                    while (bson_iter_next(&iter)) {
+                        bson_append_iter(with_id, bson_iter_key(&iter), -1, &iter);
+                    }
+                }
+                bson_destroy(new_doc);
+                new_doc = with_id;
+            }
+
+            /* Insert using mongolite_insert_one */
+            bson_oid_t inserted_id;
+            int rc = mongolite_insert_one(db, collection, new_doc, &inserted_id, error);
+            bson_destroy(new_doc);
+            return rc;
         }
         return 0;  /* No error, just no match */
     }
@@ -293,11 +332,84 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
 
     /* Handle upsert if no matches */
     if (count == 0 && upsert) {
-        /* TODO: Implement upsert */
-        _mongolite_abort_if_auto(db, txn);
-        _mongolite_unlock(db);
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Upsert not yet implemented");
-        return -1;
+        /* Build base document from filter equality conditions */
+        bson_t *base = bson_upsert_build_base(filter);
+        if (MONGOLITE_UNLIKELY(!base)) {
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to build upsert base");
+            return -1;
+        }
+
+        /* Apply update operators to base document */
+        bson_t *new_doc = bson_update_apply(base, update, error);
+        bson_destroy(base);
+        if (MONGOLITE_UNLIKELY(!new_doc)) {
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            return -1;
+        }
+
+        /* Generate _id if not present */
+        bson_oid_t new_oid;
+        bson_iter_t id_iter;
+        if (!bson_iter_init_find(&id_iter, new_doc, "_id")) {
+            bson_oid_init(&new_oid, NULL);
+            bson_t *with_id = bson_new();
+            if (MONGOLITE_UNLIKELY(!with_id)) {
+                bson_destroy(new_doc);
+                _mongolite_abort_if_auto(db, txn);
+                _mongolite_unlock(db);
+                set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate document");
+                return -1;
+            }
+            BSON_APPEND_OID(with_id, "_id", &new_oid);
+            bson_iter_t iter;
+            if (bson_iter_init(&iter, new_doc)) {
+                while (bson_iter_next(&iter)) {
+                    bson_append_iter(with_id, bson_iter_key(&iter), -1, &iter);
+                }
+            }
+            bson_destroy(new_doc);
+            new_doc = with_id;
+        } else if (BSON_ITER_HOLDS_OID(&id_iter)) {
+            bson_oid_copy(bson_iter_oid(&id_iter), &new_oid);
+        } else {
+            bson_oid_init(&new_oid, NULL);
+        }
+
+        /* Insert into collection (within existing transaction) */
+        rc = wtree_insert_one_txn(txn, tree,
+                                   new_oid.bytes, sizeof(new_oid.bytes),
+                                   bson_get_data(new_doc), new_doc->len,
+                                   error);
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            bson_destroy(new_doc);
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            return rc;
+        }
+
+        /* Maintain secondary indexes */
+        rc = _mongolite_index_insert(db, txn, collection, new_doc, error);
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            bson_destroy(new_doc);
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            return rc;
+        }
+
+        /* Update doc count */
+        rc = _mongolite_update_doc_count_txn(db, txn, collection, 1, error);
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            bson_destroy(new_doc);
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            return rc;
+        }
+
+        bson_destroy(new_doc);
+        count = 1;  /* We inserted one document */
     }
 
     rc = _mongolite_commit_if_auto(db, txn, error);
@@ -340,9 +452,73 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
     if (MONGOLITE_UNLIKELY(!existing)) {
         /* No match found */
         if (upsert) {
-            /* TODO: Implement upsert */
-            set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Upsert not yet implemented");
-            return -1;
+            /* For replace, the new document is the replacement itself */
+            /* Build base from filter, then merge with replacement */
+            bson_t *base = bson_upsert_build_base(filter);
+            if (MONGOLITE_UNLIKELY(!base)) {
+                set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to build upsert base");
+                return -1;
+            }
+
+            /* Merge: replacement fields override base fields */
+            bson_t *new_doc = bson_new();
+            if (MONGOLITE_UNLIKELY(!new_doc)) {
+                bson_destroy(base);
+                set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate document");
+                return -1;
+            }
+
+            /* Generate _id if neither filter nor replacement has it */
+            bson_oid_t new_oid;
+            bson_iter_t id_iter;
+            bool has_id = false;
+
+            /* Check if replacement has _id */
+            if (bson_iter_init_find(&id_iter, replacement, "_id")) {
+                BSON_APPEND_VALUE(new_doc, "_id", bson_iter_value(&id_iter));
+                has_id = true;
+            } else if (bson_iter_init_find(&id_iter, base, "_id")) {
+                /* Check if filter had _id */
+                BSON_APPEND_VALUE(new_doc, "_id", bson_iter_value(&id_iter));
+                has_id = true;
+            }
+
+            if (!has_id) {
+                bson_oid_init(&new_oid, NULL);
+                BSON_APPEND_OID(new_doc, "_id", &new_oid);
+            }
+
+            /* Copy base fields (except _id) */
+            if (bson_iter_init(&id_iter, base)) {
+                while (bson_iter_next(&id_iter)) {
+                    const char *key = bson_iter_key(&id_iter);
+                    if (strcmp(key, "_id") != 0) {
+                        /* Only add if not in replacement */
+                        bson_iter_t repl_iter;
+                        if (!bson_iter_init_find(&repl_iter, replacement, key)) {
+                            bson_append_iter(new_doc, key, -1, &id_iter);
+                        }
+                    }
+                }
+            }
+
+            /* Copy all replacement fields (except _id) */
+            if (bson_iter_init(&id_iter, replacement)) {
+                while (bson_iter_next(&id_iter)) {
+                    const char *key = bson_iter_key(&id_iter);
+                    if (strcmp(key, "_id") != 0) {
+                        bson_append_iter(new_doc, key, -1, &id_iter);
+                    }
+                }
+            }
+
+            bson_destroy(base);
+
+            /* Insert using mongolite_insert_one */
+            bson_oid_t inserted_id;
+            int rc = mongolite_insert_one(db, collection, new_doc, &inserted_id, error);
+            bson_destroy(new_doc);
+            return rc;
         }
         return 0;
     }

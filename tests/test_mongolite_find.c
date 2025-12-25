@@ -375,6 +375,265 @@ static void test_insert_find_integrity(void **state) {
     mongolite_close(db);
 }
 
+/* ============================================================
+ * Additional Coverage Tests
+ * ============================================================ */
+
+static void test_find_null_params(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* NULL db */
+    bson_t *doc = mongolite_find_one(NULL, "users", NULL, NULL, &error);
+    assert_null(doc);
+    assert_int_not_equal(0, error.code);
+
+    /* NULL collection */
+    error.code = 0;
+    doc = mongolite_find_one(db, NULL, NULL, NULL, &error);
+    assert_null(doc);
+    assert_int_not_equal(0, error.code);
+
+    mongolite_close(db);
+}
+
+static void test_find_cursor_null_params(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* NULL db */
+    mongolite_cursor_t *cursor = mongolite_find(NULL, "users", NULL, NULL, &error);
+    assert_null(cursor);
+
+    /* NULL collection */
+    error.code = 0;
+    cursor = mongolite_find(db, NULL, NULL, NULL, &error);
+    assert_null(cursor);
+
+    mongolite_close(db);
+}
+
+static void test_find_with_id_not_oid(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* Filter with _id that's a string, not OID - should use slow path */
+    bson_t *filter = bson_new();
+    BSON_APPEND_UTF8(filter, "_id", "string_id");
+
+    bson_t *doc = mongolite_find_one(db, "users", filter, NULL, &error);
+    /* Should not find anything since no docs have string _id */
+    assert_null(doc);
+
+    bson_destroy(filter);
+    mongolite_close(db);
+}
+
+static void test_find_with_multi_field_id_filter(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* Filter with _id plus other fields - not a simple _id query */
+    bson_oid_t oid;
+    bson_oid_init(&oid, NULL);
+
+    bson_t *filter = bson_new();
+    BSON_APPEND_OID(filter, "_id", &oid);
+    BSON_APPEND_UTF8(filter, "name", "Alice");
+
+    /* This should use slow path (filter has more than just _id) */
+    bson_t *doc = mongolite_find_one(db, "users", filter, NULL, &error);
+    /* Should not find matching doc */
+    assert_null(doc);
+
+    bson_destroy(filter);
+    mongolite_close(db);
+}
+
+static void test_find_one_json_null_params(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* NULL db */
+    char *json = mongolite_find_one_json(NULL, "users", NULL, NULL, &error);
+    assert_null(json);
+
+    /* NULL collection */
+    error.code = 0;
+    json = mongolite_find_one_json(db, NULL, NULL, NULL, &error);
+    assert_null(json);
+
+    mongolite_close(db);
+}
+
+static void test_find_one_json_invalid_filter(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* Invalid JSON filter */
+    char *json = mongolite_find_one_json(db, "users", "{invalid json}", NULL, &error);
+    assert_null(json);
+    assert_int_not_equal(0, error.code);
+
+    mongolite_close(db);
+}
+
+static void test_find_json_array_null_params(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* NULL db */
+    char *json = mongolite_find_json(NULL, "users", NULL, NULL, &error);
+    assert_null(json);
+
+    /* NULL collection */
+    error.code = 0;
+    json = mongolite_find_json(db, NULL, NULL, NULL, &error);
+    assert_null(json);
+
+    mongolite_close(db);
+}
+
+static void test_find_json_array_invalid_filter(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* Invalid JSON filter */
+    char *json = mongolite_find_json(db, "users", "{invalid}", NULL, &error);
+    assert_null(json);
+    assert_int_not_equal(0, error.code);
+
+    mongolite_close(db);
+}
+
+static void test_find_with_projection(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* Find with projection - projection is stored but not yet applied (TODO in code) */
+    bson_t *projection = bson_new();
+    BSON_APPEND_INT32(projection, "name", 1);
+
+    bson_t *doc = mongolite_find_one(db, "users", NULL, projection, &error);
+    assert_non_null(doc);
+
+    bson_iter_t iter;
+    /* name should be present */
+    assert_true(bson_iter_init_find(&iter, doc, "name"));
+    /* Note: projection not yet implemented, so all fields are returned */
+
+    bson_destroy(projection);
+    bson_destroy(doc);
+    mongolite_close(db);
+}
+
+static void test_find_cursor_with_projection(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    /* Projection is stored in cursor but not yet applied (TODO in code) */
+    bson_t *projection = bson_new();
+    BSON_APPEND_INT32(projection, "city", 1);
+
+    mongolite_cursor_t *cursor = mongolite_find(db, "users", NULL, projection, &error);
+    assert_non_null(cursor);
+
+    const bson_t *doc;
+    int count = 0;
+    while (mongolite_cursor_next(cursor, &doc)) {
+        bson_iter_t iter;
+        /* city should be present */
+        assert_true(bson_iter_init_find(&iter, doc, "city"));
+        /* Note: projection not yet implemented, name is also present */
+        count++;
+    }
+
+    assert_int_equal(5, count);
+
+    bson_destroy(projection);
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+static void test_find_empty_collection(void **state) {
+    (void)state;
+    cleanup_test_db();
+
+    mongolite_db_t *db = NULL;
+    gerror_t error = {0};
+
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
+    assert_int_equal(0, rc);
+
+    rc = mongolite_collection_create(db, "empty", NULL, &error);
+    assert_int_equal(0, rc);
+
+    /* Find one in empty collection */
+    bson_t *doc = mongolite_find_one(db, "empty", NULL, NULL, &error);
+    assert_null(doc);  /* No documents */
+
+    /* Find cursor in empty collection */
+    mongolite_cursor_t *cursor = mongolite_find(db, "empty", NULL, NULL, &error);
+    assert_non_null(cursor);
+
+    const bson_t *cursor_doc;
+    assert_false(mongolite_cursor_next(cursor, &cursor_doc));
+
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+static void test_find_nonexistent_collection(void **state) {
+    (void)state;
+    cleanup_test_db();
+
+    mongolite_db_t *db = NULL;
+    gerror_t error = {0};
+
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
+    assert_int_equal(0, rc);
+
+    /* Find in nonexistent collection */
+    bson_t *doc = mongolite_find_one(db, "nonexistent", NULL, NULL, &error);
+    assert_null(doc);
+
+    mongolite_close(db);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_teardown(test_find_one_no_filter, teardown),
@@ -389,7 +648,20 @@ int main(void) {
         cmocka_unit_test_teardown(test_find_json_array, teardown),
         cmocka_unit_test_teardown(test_find_gt_operator, teardown),
         cmocka_unit_test_teardown(test_insert_find_integrity, teardown),
+        /* Additional coverage tests */
+        cmocka_unit_test_teardown(test_find_null_params, teardown),
+        cmocka_unit_test_teardown(test_find_cursor_null_params, teardown),
+        cmocka_unit_test_teardown(test_find_with_id_not_oid, teardown),
+        cmocka_unit_test_teardown(test_find_with_multi_field_id_filter, teardown),
+        cmocka_unit_test_teardown(test_find_one_json_null_params, teardown),
+        cmocka_unit_test_teardown(test_find_one_json_invalid_filter, teardown),
+        cmocka_unit_test_teardown(test_find_json_array_null_params, teardown),
+        cmocka_unit_test_teardown(test_find_json_array_invalid_filter, teardown),
+        cmocka_unit_test_teardown(test_find_with_projection, teardown),
+        cmocka_unit_test_teardown(test_find_cursor_with_projection, teardown),
+        cmocka_unit_test_teardown(test_find_empty_collection, teardown),
+        cmocka_unit_test_teardown(test_find_nonexistent_collection, teardown),
     };
-    
+
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

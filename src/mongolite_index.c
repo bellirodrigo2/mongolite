@@ -156,7 +156,7 @@ int _index_key_compare(const void *key1, size_t key1_len,
  * building the standard index key.
  * ============================================================ */
 
-bson_t* _build_unique_check_key(const bson_t *doc, const bson_t *keys) {
+inline bson_t* _build_unique_check_key(const bson_t *doc, const bson_t *keys) {
     return _build_index_key(doc, keys, false);
 }
 

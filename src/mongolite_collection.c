@@ -144,7 +144,7 @@ int mongolite_collection_drop(mongolite_db_t *db, const char *name, gerror_t *er
         return MONGOLITE_EINVAL;
     }
 
-    /* Remove from tree cache first */
+    /* Remove from tree cache first (also invalidates index cache) */
     _mongolite_tree_cache_remove(db, name);
 
     /* Delete the LMDB tree */
@@ -155,7 +155,32 @@ int mongolite_collection_drop(mongolite_db_t *db, const char *name, gerror_t *er
         return rc;
     }
 
-    /* TODO: Drop all indexes for this collection */
+    /* Drop all secondary indexes for this collection */
+    if (entry.indexes) {
+        bson_iter_t iter;
+        if (bson_iter_init(&iter, entry.indexes)) {
+            while (bson_iter_next(&iter)) {
+                if (BSON_ITER_HOLDS_DOCUMENT(&iter)) {
+                    bson_iter_t child;
+                    if (bson_iter_recurse(&iter, &child) &&
+                        bson_iter_find(&child, "name") &&
+                        BSON_ITER_HOLDS_UTF8(&child)) {
+                        const char *index_name = bson_iter_utf8(&child, NULL);
+                        /* Skip _id index (no separate tree) */
+                        if (strcmp(index_name, "_id_") != 0) {
+                            char *index_tree_name = _mongolite_index_tree_name(name, index_name);
+                            if (index_tree_name) {
+                                /* Remove from cache and delete tree */
+                                _mongolite_tree_cache_remove(db, index_tree_name);
+                                wtree_tree_delete(db->wdb, index_tree_name, NULL);
+                                free(index_tree_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /* Delete schema entry */
     rc = _mongolite_schema_delete(db, name, error);

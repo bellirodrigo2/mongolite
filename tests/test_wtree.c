@@ -719,6 +719,506 @@ static void test_txn_reset_and_renew_readonly(void **state) {
     wtree_db_close(db);
 }
 
+static void test_db_resize(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    size_t initial_size = 10 * 1024 * 1024;  // 10MB
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, initial_size, 0, 0, &error);
+    assert_non_null(db);
+    assert_int_equal(initial_size, wtree_db_get_mapsize(db));
+
+    // Resize to larger
+    size_t new_size = 20 * 1024 * 1024;  // 20MB
+    int rc = wtree_db_resize(db, new_size, &error);
+    assert_int_equal(0, rc);
+    assert_int_equal(new_size, wtree_db_get_mapsize(db));
+
+    // Test with NULL db
+    rc = wtree_db_resize(NULL, new_size, &error);
+    assert_int_equal(-1, rc);
+
+    wtree_db_close(db);
+}
+
+static int custom_compare(const MDB_val *a, const MDB_val *b) {
+    // Reverse string comparison
+    size_t min_len = a->mv_size < b->mv_size ? a->mv_size : b->mv_size;
+    int cmp = memcmp(b->mv_data, a->mv_data, min_len);  // Reverse
+    if (cmp != 0) return cmp;
+    return (int)(b->mv_size - a->mv_size);  // Reverse
+}
+
+static void test_tree_set_compare(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    wtree_tree_t *tree = wtree_tree_create(db, "custom_cmp", 0, &error);
+    assert_non_null(tree);
+
+    // Set custom compare function
+    int rc = wtree_tree_set_compare(tree, custom_compare, &error);
+    assert_int_equal(0, rc);
+
+    // Test with NULL params
+    rc = wtree_tree_set_compare(NULL, custom_compare, &error);
+    assert_int_equal(-1, rc);
+    rc = wtree_tree_set_compare(tree, NULL, &error);
+    assert_int_equal(-1, rc);
+
+    // Insert data - should be ordered by custom compare (reverse)
+    wtree_insert_one(tree, "aaa", 3, "1", 2, &error);
+    wtree_insert_one(tree, "bbb", 3, "2", 2, &error);
+    wtree_insert_one(tree, "ccc", 3, "3", 2, &error);
+
+    // Iterate - with reverse compare, "ccc" should be first
+    wtree_iterator_t *iter = wtree_iterator_create(tree, &error);
+    assert_true(wtree_iterator_first(iter));
+    const void *key;
+    size_t key_size;
+    wtree_iterator_key(iter, &key, &key_size);
+    assert_memory_equal("ccc", key, 3);  // Reverse order
+
+    wtree_iterator_close(iter);
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_tree_dupsort(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    // Create tree with DUPSORT flag
+    wtree_tree_t *tree = wtree_tree_create(db, "dupsort", MDB_DUPSORT, &error);
+    assert_non_null(tree);
+
+    // Set dupsort comparator (optional, use default)
+    int rc = wtree_tree_set_dupsort(tree, custom_compare, &error);
+    assert_int_equal(0, rc);
+
+    // Test with NULL params
+    rc = wtree_tree_set_dupsort(NULL, custom_compare, &error);
+    assert_int_equal(-1, rc);
+    rc = wtree_tree_set_dupsort(tree, NULL, &error);
+    assert_int_equal(-1, rc);
+
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_txn_nested(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
+    assert_non_null(tree);
+
+    // Begin parent write transaction
+    wtree_txn_t *parent = wtree_txn_begin(db, true, &error);
+    assert_non_null(parent);
+
+    // Insert in parent
+    wtree_insert_one_txn(parent, tree, "key1", 4, "val1", 5, &error);
+
+    // Begin nested transaction
+    wtree_txn_t *nested = wtree_txn_begin_nested(parent, &error);
+    assert_non_null(nested);
+
+    // Insert in nested
+    wtree_insert_one_txn(nested, tree, "key2", 4, "val2", 5, &error);
+
+    // Commit nested
+    int rc = wtree_txn_commit(nested, &error);
+    assert_int_equal(0, rc);
+
+    // Commit parent
+    rc = wtree_txn_commit(parent, &error);
+    assert_int_equal(0, rc);
+
+    // Both should exist
+    assert_true(wtree_exists(tree, "key1", 4, &error));
+    assert_true(wtree_exists(tree, "key2", 4, &error));
+
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_txn_nested_abort(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
+    assert_non_null(tree);
+
+    // Begin parent write transaction
+    wtree_txn_t *parent = wtree_txn_begin(db, true, &error);
+    assert_non_null(parent);
+
+    // Insert in parent
+    wtree_insert_one_txn(parent, tree, "key1", 4, "val1", 5, &error);
+
+    // Begin nested transaction
+    wtree_txn_t *nested = wtree_txn_begin_nested(parent, &error);
+    assert_non_null(nested);
+
+    // Insert in nested
+    wtree_insert_one_txn(nested, tree, "key2", 4, "val2", 5, &error);
+
+    // Abort nested - key2 should not be visible
+    wtree_txn_abort(nested);
+
+    // Commit parent
+    int rc = wtree_txn_commit(parent, &error);
+    assert_int_equal(0, rc);
+
+    // key1 should exist, key2 should not
+    assert_true(wtree_exists(tree, "key1", 4, &error));
+    assert_false(wtree_exists(tree, "key2", 4, &error));
+
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_txn_nested_errors(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    // Test nested with NULL parent
+    wtree_txn_t *nested = wtree_txn_begin_nested(NULL, &error);
+    assert_null(nested);
+    assert_int_not_equal(0, error.code);
+
+    // Test nested with read-only parent
+    error.code = 0;
+    wtree_txn_t *ro_txn = wtree_txn_begin(db, false, &error);
+    assert_non_null(ro_txn);
+
+    nested = wtree_txn_begin_nested(ro_txn, &error);
+    assert_null(nested);  // Should fail - nested requires write parent
+    assert_int_not_equal(0, error.code);
+
+    wtree_txn_abort(ro_txn);
+    wtree_db_close(db);
+}
+
+static void test_txn_renew_write_error(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    // Test renew with write transaction (should fail)
+    wtree_txn_t *w_txn = wtree_txn_begin(db, true, &error);
+    assert_non_null(w_txn);
+
+    int rc = wtree_txn_renew(w_txn, &error);
+    assert_int_equal(-1, rc);  // Cannot renew write transaction
+
+    // Test renew with NULL
+    error.code = 0;
+    rc = wtree_txn_renew(NULL, &error);
+    assert_int_equal(-1, rc);
+
+    wtree_txn_abort(w_txn);
+    wtree_db_close(db);
+}
+
+static void test_delete_dup(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    // Create DUPSORT tree
+    wtree_tree_t *tree = wtree_tree_create(db, "dupsort_del", MDB_DUPSORT, &error);
+    assert_non_null(tree);
+
+    wtree_txn_t *txn = wtree_txn_begin(db, true, &error);
+    assert_non_null(txn);
+
+    // Insert multiple values for same key (using MDB_NODUPDATA)
+    const char *key = "key";
+    wtree_insert_one_txn(txn, tree, key, 3, "val1", 5, &error);
+    wtree_insert_one_txn(txn, tree, key, 3, "val2", 5, &error);
+    wtree_insert_one_txn(txn, tree, key, 3, "val3", 5, &error);
+
+    // Delete specific duplicate
+    bool deleted = false;
+    int rc = wtree_delete_dup_txn(txn, tree, key, 3, "val2", 5, &deleted, &error);
+    assert_int_equal(0, rc);
+    assert_true(deleted);
+
+    // Delete non-existent duplicate
+    deleted = false;
+    rc = wtree_delete_dup_txn(txn, tree, key, 3, "nonexistent", 11, &deleted, &error);
+    assert_int_equal(0, rc);
+    assert_false(deleted);
+
+    rc = wtree_txn_commit(txn, &error);
+    assert_int_equal(0, rc);
+
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_delete_dup_errors(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
+
+    // Test with NULL params
+    bool deleted;
+    int rc = wtree_delete_dup_txn(NULL, tree, "k", 1, "v", 1, &deleted, &error);
+    assert_int_equal(-1, rc);
+
+    // Test with read-only transaction
+    error.code = 0;
+    wtree_txn_t *ro_txn = wtree_txn_begin(db, false, &error);
+    rc = wtree_delete_dup_txn(ro_txn, tree, "k", 1, "v", 1, &deleted, &error);
+    assert_int_equal(-1, rc);
+
+    wtree_txn_abort(ro_txn);
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_iterator_delete(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    cleanup_test_db();
+    create_test_dir();
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
+
+    // Insert data
+    wtree_insert_one(tree, "del1", 4, "v1", 3, &error);
+    wtree_insert_one(tree, "del2", 4, "v2", 3, &error);
+    wtree_insert_one(tree, "del3", 4, "v3", 3, &error);
+
+    // Create write transaction for iterator
+    wtree_txn_t *txn = wtree_txn_begin(db, true, &error);
+    wtree_iterator_t *iter = wtree_iterator_create_with_txn(tree, txn, &error);
+    assert_non_null(iter);
+
+    // Seek to del2 and delete it
+    assert_true(wtree_iterator_seek(iter, "del2", 4));
+    int rc = wtree_iterator_delete(iter, &error);
+    assert_int_equal(0, rc);
+
+    wtree_iterator_close(iter);
+    rc = wtree_txn_commit(txn, &error);
+    assert_int_equal(0, rc);
+
+    // Verify del2 is gone
+    assert_true(wtree_exists(tree, "del1", 4, &error));
+    assert_false(wtree_exists(tree, "del2", 4, &error));
+    assert_true(wtree_exists(tree, "del3", 4, &error));
+
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_iterator_delete_errors(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    cleanup_test_db();
+    create_test_dir();
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
+
+    // Test delete with NULL iterator
+    int rc = wtree_iterator_delete(NULL, &error);
+    assert_int_equal(-1, rc);
+
+    // Test delete with invalid iterator (not positioned)
+    wtree_txn_t *txn = wtree_txn_begin(db, true, &error);
+    wtree_iterator_t *iter = wtree_iterator_create_with_txn(tree, txn, &error);
+
+    // Iterator not positioned - should fail
+    rc = wtree_iterator_delete(iter, &error);
+    assert_int_equal(-1, rc);
+
+    wtree_iterator_close(iter);
+    wtree_txn_abort(txn);
+
+    // Test delete with read-only transaction
+    wtree_insert_one(tree, "key", 3, "val", 4, &error);
+
+    wtree_txn_t *ro_txn = wtree_txn_begin(db, false, &error);
+    iter = wtree_iterator_create_with_txn(tree, ro_txn, &error);
+    assert_true(wtree_iterator_first(iter));
+
+    rc = wtree_iterator_delete(iter, &error);
+    assert_int_equal(-1, rc);  // Read-only can't delete
+
+    wtree_iterator_close(iter);
+    wtree_txn_abort(ro_txn);
+
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_db_stats_errors(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    MDB_stat stat;
+
+    // Test with NULL db
+    int rc = wtree_db_stats(NULL, &stat, &error);
+    assert_int_equal(-1, rc);
+
+    // Test with NULL stat
+    error.code = 0;
+    rc = wtree_db_stats(db, NULL, &error);
+    assert_int_equal(-1, rc);
+
+    wtree_db_close(db);
+}
+
+static void test_db_sync_errors(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    // Test with NULL db
+    int rc = wtree_db_sync(NULL, false, &error);
+    assert_int_equal(-1, rc);
+}
+
+static void test_write_on_readonly_txn(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    wtree_tree_t *tree = wtree_tree_create(db, NULL, 0, &error);
+    wtree_txn_t *ro_txn = wtree_txn_begin(db, false, &error);
+
+    // All write operations should fail on read-only transaction
+    int rc = wtree_insert_one_txn(ro_txn, tree, "k", 1, "v", 1, &error);
+    assert_int_equal(-1, rc);
+
+    error.code = 0;
+    rc = wtree_update_txn(ro_txn, tree, "k", 1, "v", 1, &error);
+    assert_int_equal(-1, rc);
+
+    error.code = 0;
+    bool deleted;
+    rc = wtree_delete_one_txn(ro_txn, tree, "k", 1, &deleted, &error);
+    assert_int_equal(-1, rc);
+
+    error.code = 0;
+    const void *keys[] = {"k"};
+    size_t sizes[] = {1};
+    size_t del_count;
+    rc = wtree_delete_many_txn(ro_txn, tree, keys, sizes, 1, &del_count, &error);
+    assert_int_equal(-1, rc);
+
+    wtree_txn_abort(ro_txn);
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_tree_delete(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    // Create a tree and add some data
+    wtree_tree_t *tree = wtree_tree_create(db, "to_delete", 0, &error);
+    assert_non_null(tree);
+
+    wtree_insert_one(tree, "key1", 4, "val1", 5, &error);
+    wtree_tree_close(tree);
+
+    // Delete the tree
+    int rc = wtree_tree_delete(db, "to_delete", &error);
+    assert_int_equal(0, rc);
+
+    // Tree should no longer exist - creating it again should work
+    tree = wtree_tree_create(db, "to_delete", 0, &error);
+    assert_non_null(tree);
+
+    // Data should be gone
+    assert_false(wtree_exists(tree, "key1", 4, &error));
+
+    wtree_tree_close(tree);
+    wtree_db_close(db);
+}
+
+static void test_tree_delete_errors(void **state) {
+    (void)state;
+    gerror_t error = {0};
+
+    wtree_db_t *db = wtree_db_create(TEST_DB_PATH, 0, 0, 0, &error);
+    assert_non_null(db);
+
+    // Test with NULL params
+    int rc = wtree_tree_delete(NULL, "name", &error);
+    assert_int_equal(-1, rc);
+
+    error.code = 0;
+    rc = wtree_tree_delete(db, NULL, &error);
+    assert_int_equal(-1, rc);
+
+    // Test deleting non-existent tree
+    error.code = 0;
+    rc = wtree_tree_delete(db, "nonexistent", &error);
+    assert_int_not_equal(0, rc);  // Should fail
+
+    wtree_db_close(db);
+}
+
+static void test_strerror_all_codes(void **state) {
+    (void)state;
+
+    // Test all special error codes
+    const char *msg;
+
+    msg = wtree_strerror(WTREE_MAP_FULL);
+    assert_non_null(msg);
+    assert_true(strlen(msg) > 0);
+
+    msg = wtree_strerror(WTREE_TXN_FULL);
+    assert_non_null(msg);
+    assert_true(strlen(msg) > 0);
+
+    msg = wtree_strerror(WTREE_KEY_NOT_FOUND);
+    assert_non_null(msg);
+    assert_true(strlen(msg) > 0);
+
+    // Test default case (uses mdb_strerror)
+    msg = wtree_strerror(12345);  // Some arbitrary code
+    assert_non_null(msg);
+}
+
 // ============= Main Test Suite =============
 
 int main(void) {
@@ -730,10 +1230,17 @@ int main(void) {
         cmocka_unit_test_setup_teardown(test_db_stats, setup, teardown),
         cmocka_unit_test_setup_teardown(test_db_sync, setup, teardown),
         cmocka_unit_test_setup_teardown(test_db_mapsize, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_db_resize, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_db_stats_errors, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_db_sync_errors, setup, teardown),
 
         // Tree tests
         cmocka_unit_test_setup_teardown(test_tree_create_and_close, setup, teardown),
         cmocka_unit_test_setup_teardown(test_tree_create_unnamed, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_tree_set_compare, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_tree_dupsort, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_tree_delete, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_tree_delete_errors, setup, teardown),
 
         // Basic operations
         cmocka_unit_test_setup_teardown(test_insert_and_get, setup, teardown),
@@ -741,6 +1248,9 @@ int main(void) {
         cmocka_unit_test_setup_teardown(test_exists_check, setup, teardown),
         cmocka_unit_test_setup_teardown(test_update_value, setup, teardown),
         cmocka_unit_test_setup_teardown(test_delete_key, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_delete_dup, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_delete_dup_errors, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_write_on_readonly_txn, setup, teardown),
 
         // Transaction tests
         cmocka_unit_test_setup_teardown(test_transaction_basic, setup, teardown),
@@ -748,17 +1258,24 @@ int main(void) {
         cmocka_unit_test_setup_teardown(test_transaction_readonly, setup, teardown),
         cmocka_unit_test_setup_teardown(test_transaction_batch_insert, setup, teardown),
         cmocka_unit_test_setup_teardown(test_transaction_batch_delete, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_txn_nested, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_txn_nested_abort, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_txn_nested_errors, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_txn_renew_write_error, setup, teardown),
 
         // Iterator tests
         cmocka_unit_test_setup_teardown(test_iterator_basic, setup, teardown),
         cmocka_unit_test_setup_teardown(test_iterator_seek, setup, teardown),
         cmocka_unit_test_setup_teardown(test_iterator_get_copy, setup, teardown),
         cmocka_unit_test_setup_teardown(test_iterator_with_txn, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_iterator_delete, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_iterator_delete_errors, setup, teardown),
 
         // Other tests
         cmocka_unit_test(test_error_handling),
         cmocka_unit_test_setup_teardown(test_binary_data, setup, teardown),
         cmocka_unit_test_setup_teardown(test_txn_reset_and_renew_readonly, setup, teardown),
+        cmocka_unit_test(test_strerror_all_codes),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

@@ -6,6 +6,7 @@
 #   ENABLE_SANITIZERS - Enable ASan/UBSan for Debug builds
 #   ENABLE_VALGRIND   - Valgrind-friendly build (disables sanitizers)
 #   ENABLE_LTO        - Enable Link-Time Optimization for Release
+#   ENABLE_COVERAGE   - Enable code coverage instrumentation
 #
 # Build Types:
 #   Debug         - Full debug symbols, no optimization
@@ -20,11 +21,24 @@
 option(ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer (Debug only)" OFF)
 option(ENABLE_VALGRIND "Valgrind-friendly build (disables sanitizers, uses -O1)" OFF)
 option(ENABLE_LTO "Enable Link-Time Optimization (Release only)" OFF)
+option(ENABLE_COVERAGE "Enable code coverage instrumentation (gcov/lcov)" OFF)
 
 # Valgrind and sanitizers are mutually exclusive
 if(ENABLE_VALGRIND AND ENABLE_SANITIZERS)
     message(WARNING "ENABLE_VALGRIND and ENABLE_SANITIZERS are mutually exclusive. Disabling sanitizers.")
     set(ENABLE_SANITIZERS OFF CACHE BOOL "" FORCE)
+endif()
+
+# Coverage and sanitizers are mutually exclusive (ASan interferes with gcov)
+if(ENABLE_COVERAGE AND ENABLE_SANITIZERS)
+    message(WARNING "ENABLE_COVERAGE and ENABLE_SANITIZERS are mutually exclusive. Disabling sanitizers.")
+    set(ENABLE_SANITIZERS OFF CACHE BOOL "" FORCE)
+endif()
+
+# Coverage requires Debug or RelWithDebInfo build
+if(ENABLE_COVERAGE AND CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(WARNING "Coverage requires Debug build. Switching to Debug.")
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "" FORCE)
 endif()
 
 # ============================================================
@@ -55,7 +69,12 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     if(MSVC)
         add_compile_options(/Zi /Od)
     else()
-        if(ENABLE_VALGRIND)
+        if(ENABLE_COVERAGE)
+            # Coverage instrumentation: -O0 for accurate line coverage
+            add_compile_options(-g -O0 --coverage -fprofile-arcs -ftest-coverage)
+            add_link_options(--coverage)
+            message(STATUS "Coverage enabled: gcov instrumentation active")
+        elseif(ENABLE_VALGRIND)
             # Valgrind works better with -O1 (some optimizations help readability)
             add_compile_options(-g3 -O1 -fno-omit-frame-pointer)
             message(STATUS "Valgrind mode: using -O1 -g3 -fno-omit-frame-pointer")
@@ -138,6 +157,7 @@ message(STATUS "=== Mongolite Build Configuration ===")
 message(STATUS "Build type:       ${CMAKE_BUILD_TYPE}")
 message(STATUS "Sanitizers:       ${ENABLE_SANITIZERS}")
 message(STATUS "Valgrind mode:    ${ENABLE_VALGRIND}")
+message(STATUS "Coverage:         ${ENABLE_COVERAGE}")
 message(STATUS "LTO:              ${ENABLE_LTO}")
 message(STATUS "C Compiler:       ${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
 message(STATUS "=====================================")

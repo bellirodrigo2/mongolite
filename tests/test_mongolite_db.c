@@ -325,17 +325,140 @@ static void test_oid_to_rowid(void **state) {
     bson_oid_t oid1, oid2;
     bson_oid_init(&oid1, NULL);
     bson_oid_init(&oid2, NULL);
-    
+
     int64_t rowid1 = _mongolite_oid_to_rowid(&oid1);
     int64_t rowid2 = _mongolite_oid_to_rowid(&oid2);
-    
+
     assert_int_not_equal(rowid1, rowid2);
-    
+
     int64_t rowid1_again = _mongolite_oid_to_rowid(&oid1);
     assert_int_equal(rowid1, rowid1_again);
-    
+
     int64_t null_rowid = _mongolite_oid_to_rowid(NULL);
     assert_int_equal(0, null_rowid);
+}
+
+static void test_last_insert_rowid(void **state) {
+    (void)state;
+    mongolite_db_t *db = NULL;
+    gerror_t error = {0};
+
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;
+
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
+    assert_int_equal(0, rc);
+
+    /* Create a collection */
+    rc = mongolite_collection_create(db, "rowid_test", NULL, &error);
+    assert_int_equal(0, rc);
+
+    /* Insert a document */
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "name", "test");
+    bson_oid_t oid;
+    rc = mongolite_insert_one(db, "rowid_test", doc, &oid, &error);
+    assert_int_equal(0, rc);
+    bson_destroy(doc);
+
+    /* Check last_insert_rowid */
+    int64_t rowid = mongolite_last_insert_rowid(db);
+    assert_true(rowid != 0);
+
+    /* Test with NULL db */
+    rowid = mongolite_last_insert_rowid(NULL);
+    assert_int_equal(0, rowid);
+
+    mongolite_close(db);
+}
+
+static void test_set_metadata(void **state) {
+    (void)state;
+    mongolite_db_t *db = NULL;
+    gerror_t error = {0};
+
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;
+
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
+    assert_int_equal(0, rc);
+
+    /* Set metadata */
+    bson_t *metadata = bson_new();
+    BSON_APPEND_UTF8(metadata, "app", "test_app");
+    BSON_APPEND_INT32(metadata, "version", 1);
+
+    rc = mongolite_db_set_metadata(db, metadata, &error);
+    assert_int_equal(0, rc);
+
+    /* Read back and verify */
+    const bson_t *stored = mongolite_db_metadata(db);
+    assert_non_null(stored);
+
+    bson_iter_t iter;
+    assert_true(bson_iter_init_find(&iter, stored, "app"));
+    assert_string_equal("test_app", bson_iter_utf8(&iter, NULL));
+
+    assert_true(bson_iter_init_find(&iter, stored, "version"));
+    assert_int_equal(1, bson_iter_int32(&iter));
+
+    bson_destroy(metadata);
+
+    /* Update metadata */
+    metadata = bson_new();
+    BSON_APPEND_UTF8(metadata, "app", "updated_app");
+    BSON_APPEND_INT32(metadata, "version", 2);
+
+    rc = mongolite_db_set_metadata(db, metadata, &error);
+    assert_int_equal(0, rc);
+
+    stored = mongolite_db_metadata(db);
+    assert_true(bson_iter_init_find(&iter, stored, "version"));
+    assert_int_equal(2, bson_iter_int32(&iter));
+
+    bson_destroy(metadata);
+
+    /* Test with NULL db */
+    error.code = 0;
+    rc = mongolite_db_set_metadata(NULL, metadata, &error);
+    assert_int_not_equal(0, rc);
+
+    mongolite_close(db);
+}
+
+static void test_changes_counter(void **state) {
+    (void)state;
+    mongolite_db_t *db = NULL;
+    gerror_t error = {0};
+
+    db_config_t config = {0};
+    config.max_bytes = 32ULL * 1024 * 1024;
+
+    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
+    assert_int_equal(0, rc);
+
+    rc = mongolite_collection_create(db, "changes_test", NULL, &error);
+    assert_int_equal(0, rc);
+
+    /* Initial changes should be 0 */
+    int changes = mongolite_changes(db);
+    assert_int_equal(0, changes);
+
+    /* Insert should set changes to 1 */
+    bson_t *doc = bson_new();
+    BSON_APPEND_UTF8(doc, "name", "test");
+    rc = mongolite_insert_one(db, "changes_test", doc, NULL, &error);
+    assert_int_equal(0, rc);
+    bson_destroy(doc);
+
+    changes = mongolite_changes(db);
+    assert_int_equal(1, changes);
+
+    /* Test with NULL */
+    changes = mongolite_changes(NULL);
+    assert_int_equal(0, changes);
+
+    mongolite_close(db);
 }
 
 int main(void) {
@@ -350,7 +473,10 @@ int main(void) {
         cmocka_unit_test_setup_teardown(test_error_handling, setup, teardown),
         cmocka_unit_test_setup_teardown(test_sync, setup, teardown),
         cmocka_unit_test(test_oid_to_rowid),
+        cmocka_unit_test_setup_teardown(test_last_insert_rowid, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_set_metadata, setup, teardown),
+        cmocka_unit_test_setup_teardown(test_changes_counter, setup, teardown),
     };
-    
+
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
