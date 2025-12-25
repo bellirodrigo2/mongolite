@@ -51,6 +51,14 @@ add_mongolite_test(test_gerror ${SRC_DIR}/gerror.c)
 add_mongolite_test(test_wtree ${WTREE_SOURCES} ${SRC_DIR}/gerror.c)
 add_mongolite_test(test_wtree_iter ${WTREE_SOURCES} ${SRC_DIR}/gerror.c)
 
+# wtree2 test - needs wtree + wtree2 + gerror
+add_mongolite_test(test_wtree2
+    ${WTREE_SOURCES}
+    ${SRC_DIR}/wtree2.c
+    ${SRC_DIR}/gerror.c
+)
+target_include_directories(test_wtree2 PRIVATE ${TEST_INCLUDE_DIRS})
+
 # key_compare test - needs libbson
 add_mongolite_test(test_key_compare ${SRC_DIR}/key_compare.c)
 add_dependencies(test_key_compare libbson)
@@ -181,6 +189,7 @@ set(ALL_TEST_TARGETS
     test_gerror
     test_wtree
     test_wtree_iter
+    test_wtree2
     test_key_compare
     test_bsonmatch
     test_bson_update
