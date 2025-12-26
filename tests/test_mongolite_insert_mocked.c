@@ -140,8 +140,8 @@ static void test_insert_duplicate_key(void **state) {
     BSON_APPEND_OID(doc2, "_id", &oid1);
     BSON_APPEND_INT32(doc2, "value", 2);
     rc = mongolite_insert_one(g_db, "test", doc2, NULL, &error);
-    /* Mock returns MDB_KEYEXIST directly */
-    assert_int_equal(MDB_KEYEXIST, rc);
+    /* wtree2 translates MDB_KEYEXIST to MONGOLITE_EEXISTS */
+    assert_int_equal(MONGOLITE_EEXISTS, rc);
     bson_destroy(doc2);
 }
 
@@ -200,11 +200,11 @@ static void test_insert_map_full_auto_resize(void **state) {
     (void)state;
     gerror_t error = {0};
 
-    /* Get initial mapsize */
-    size_t initial_mapsize = wtree_db_get_mapsize((wtree_db_t*)g_db->wdb);
+    /* Get initial mapsize via wtree2 wrapper */
+    size_t initial_mapsize = wtree2_db_get_mapsize(g_db->wdb);
 
-    /* Inject MDB_MAP_FULL error for next insert - should trigger auto-resize */
-    mock_wtree_fail_next_insert(MDB_MAP_FULL);
+    /* Inject WTREE_MAP_FULL error for next insert - should trigger auto-resize */
+    mock_wtree_fail_next_insert(WTREE_MAP_FULL);
 
     bson_t *doc = create_test_doc("resize_test", 1);
     int rc = mongolite_insert_one(g_db, "test", doc, NULL, &error);
@@ -213,7 +213,7 @@ static void test_insert_map_full_auto_resize(void **state) {
     assert_int_equal(0, rc);
 
     /* Mapsize should have doubled */
-    size_t new_mapsize = wtree_db_get_mapsize((wtree_db_t*)g_db->wdb);
+    size_t new_mapsize = wtree2_db_get_mapsize(g_db->wdb);
     assert_int_equal(initial_mapsize * 2, new_mapsize);
 
     bson_destroy(doc);
@@ -224,11 +224,12 @@ static void test_insert_wtree_failure(void **state) {
     gerror_t error = {0};
 
     /* Inject a non-MAP_FULL error that doesn't trigger resize */
-    mock_wtree_fail_next_insert(MDB_KEYEXIST);
+    mock_wtree_fail_next_insert(WTREE_KEY_EXISTS);
 
     bson_t *doc = create_test_doc("will_fail", 1);
     int rc = mongolite_insert_one(g_db, "test", doc, NULL, &error);
-    assert_int_equal(MDB_KEYEXIST, rc);
+    /* wtree2 translates WTREE_KEY_EXISTS to MONGOLITE_EEXISTS */
+    assert_int_equal(MONGOLITE_EEXISTS, rc);
 
     bson_destroy(doc);
 }
@@ -394,8 +395,8 @@ static void test_insert_many_duplicate_within_batch(void **state) {
     BSON_APPEND_INT32(dup, "value", 999);
 
     rc = mongolite_insert_one(g_db, "test", dup, NULL, &error);
-    /* Mock returns MDB_KEYEXIST directly */
-    assert_int_equal(MDB_KEYEXIST, rc);
+    /* wtree2 translates MDB_KEYEXIST to MONGOLITE_EEXISTS */
+    assert_int_equal(MONGOLITE_EEXISTS, rc);
     bson_destroy(dup);
 }
 

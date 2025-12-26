@@ -453,6 +453,14 @@ bool wtree2_index_iterator_main_key(
     size_t *main_key_size
 );
 
+/*
+ * Get underlying wtree transaction from iterator
+ *
+ * Useful when you need to fetch data using the same transaction
+ * that the iterator is using.
+ */
+wtree_txn_t* wtree2_iterator_get_txn(wtree2_iterator_t *iter);
+
 /* ============================================================
  * Utility Functions
  * ============================================================ */

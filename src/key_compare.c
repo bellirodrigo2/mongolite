@@ -449,3 +449,104 @@ bson_t* bson_extract_index_key(const bson_t *doc, const bson_t *keys) {
 
     return result;
 }
+
+/* ============================================================
+ * 9) WTREE2 INDEX KEY EXTRACTION CALLBACK
+ *
+ *    This is the callback for wtree2 index support.
+ *    user_data = bson_t* containing the index key spec (e.g., {"email": 1})
+ * ============================================================ */
+
+bool bson_index_key_extractor(const void *value, size_t value_len,
+                               void *user_data,
+                               void **out_key, size_t *out_len) {
+    if (!value || !user_data || !out_key || !out_len) {
+        return false;
+    }
+
+    const bson_t *keys = (const bson_t *)user_data;
+
+    /* Parse the document from raw bytes */
+    bson_t doc;
+    if (!bson_init_static(&doc, value, value_len)) {
+        return false;
+    }
+
+    /* Extract the index key fields */
+    bson_t *index_key = bson_extract_index_key(&doc, keys);
+    if (!index_key) {
+        return false;
+    }
+
+    /* Check if this is an "empty" key (all nulls) for sparse index handling
+     * A document with all null index fields should NOT be indexed for sparse indexes.
+     * The caller determines sparse behavior - we just extract the key. */
+
+    /* Return the BSON data as the key */
+    *out_len = index_key->len;
+    *out_key = malloc(index_key->len);
+    if (!*out_key) {
+        bson_destroy(index_key);
+        return false;
+    }
+
+    memcpy(*out_key, bson_get_data(index_key), index_key->len);
+    bson_destroy(index_key);
+
+    return true;
+}
+
+/* Check if all indexed fields are null/missing (for sparse index support) */
+bool bson_index_key_is_null(const void *value, size_t value_len, void *user_data) {
+    if (!value || !user_data) {
+        return true;
+    }
+
+    const bson_t *keys = (const bson_t *)user_data;
+
+    bson_t doc;
+    if (!bson_init_static(&doc, value, value_len)) {
+        return true;
+    }
+
+    bson_iter_t keys_iter;
+    if (!bson_iter_init(&keys_iter, keys)) {
+        return true;
+    }
+
+    /* Check each indexed field */
+    while (bson_iter_next(&keys_iter)) {
+        const char *field = bson_iter_key(&keys_iter);
+        bson_iter_t doc_iter, descendant;
+        bool found = false;
+
+        if (bson_iter_init_find(&doc_iter, &doc, field)) {
+            found = true;
+        } else if (strchr(field, '.') != NULL) {
+            if (bson_iter_init(&doc_iter, &doc) &&
+                bson_iter_find_descendant(&doc_iter, field, &descendant)) {
+                doc_iter = descendant;
+                found = true;
+            }
+        }
+
+        if (found && bson_iter_type(&doc_iter) != BSON_TYPE_NULL) {
+            return false;  /* Found a non-null field */
+        }
+    }
+
+    return true;  /* All fields are null or missing */
+}
+
+/* Sparse-aware key extractor: returns false if all fields are null/missing */
+bool bson_index_key_extractor_sparse(const void *value, size_t value_len,
+                                      void *user_data,
+                                      void **out_key, size_t *out_len) {
+    /* First check if the document should be indexed at all */
+    if (bson_index_key_is_null(value, value_len, user_data)) {
+        return false;  /* Skip indexing this document */
+    }
+
+    /* Extract the key normally */
+    return bson_index_key_extractor(value, value_len, user_data, out_key, out_len);
+}

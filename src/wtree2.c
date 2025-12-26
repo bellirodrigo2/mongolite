@@ -75,6 +75,8 @@ static int translate_wtree_error(int wtree_rc) {
             return WTREE2_MAP_FULL;
         case WTREE_KEY_NOT_FOUND:
             return WTREE2_ENOTFOUND;
+        case WTREE_KEY_EXISTS:
+            return WTREE2_EEXISTS;
         default:
             return WTREE2_ERROR;
     }
@@ -1106,6 +1108,14 @@ bool wtree2_index_iterator_main_key(wtree2_iterator_t *iter,
     /* In index iterator, "value" is the main tree key */
     return iter && iter->is_index &&
            wtree_iterator_value(iter->witer, main_key, main_key_size);
+}
+
+wtree_txn_t* wtree2_iterator_get_txn(wtree2_iterator_t *iter) {
+    if (!iter || !iter->witer) {
+        return NULL;
+    }
+    /* Get the transaction from the underlying wtree iterator */
+    return wtree_iterator_get_txn(iter->witer);
 }
 
 /* ============================================================

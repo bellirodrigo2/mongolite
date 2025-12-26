@@ -73,8 +73,8 @@ int mongolite_open(const char *filename, mongolite_db_t **db,
 
     unsigned int lmdb_flags = config ? config->lmdb_flags : 0;
 
-    /* Open LMDB environment */
-    new_db->wdb = wtree_db_create(filename, max_bytes, max_dbs, lmdb_flags, error);
+    /* Open LMDB environment via wtree2 */
+    new_db->wdb = wtree2_db_create(filename, max_bytes, max_dbs, lmdb_flags, error);
     if (!new_db->wdb) {
         free(new_db);
         return MONGOLITE_ERROR;
@@ -87,18 +87,18 @@ int mongolite_open(const char *filename, mongolite_db_t **db,
     /* Initialize mutex */
     int rc = _mongolite_lock_init(new_db);
     if (rc != 0) {
-        wtree_db_close(new_db->wdb);
+        wtree2_db_close(new_db->wdb);
         free(new_db->path);
         free(new_db);
         set_error(error, MONGOLITE_LIB, rc, "Failed to initialize mutex");
         return rc;
     }
 
-    /* Initialize schema tree */
+    /* Initialize schema tree (uses plain wtree under wtree2) */
     rc = _mongolite_schema_init(new_db, error);
     if (rc != 0) {
         _mongolite_lock_free(new_db);
-        wtree_db_close(new_db->wdb);
+        wtree2_db_close(new_db->wdb);
         free(new_db->path);
         free(new_db);
         return rc;
@@ -118,28 +118,28 @@ int mongolite_close(mongolite_db_t *db) {
 
     /* Abort any pending transaction */
     if (db->in_transaction && db->current_txn) {
-        wtree_txn_abort(db->current_txn);
+        wtree2_txn_abort(db->current_txn);
         db->current_txn = NULL;
         db->in_transaction = false;
     }
 
     /* Clean up pooled read transaction */
     if (db->read_txn_pool) {
-        wtree_txn_abort(db->read_txn_pool);
+        wtree2_txn_abort(db->read_txn_pool);
         db->read_txn_pool = NULL;
     }
 
-    /* Clear tree cache */
+    /* Clear tree cache (closes wtree2 collection trees) */
     _mongolite_tree_cache_clear(db);
 
-    /* Close schema tree */
+    /* Close schema tree (plain wtree) */
     if (db->schema_tree) {
         wtree_tree_close(db->schema_tree);
     }
 
-    /* Close LMDB environment */
+    /* Close LMDB environment via wtree2 */
     if (db->wdb) {
-        wtree_db_close(db->wdb);
+        wtree2_db_close(db->wdb);
     }
 
     /* Free metadata */

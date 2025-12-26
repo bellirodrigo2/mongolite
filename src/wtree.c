@@ -53,17 +53,21 @@ struct wtree_iterator_t {
 static int translate_mdb_error(int mdb_rc, gerror_t *error) {
     switch (mdb_rc) {
         case MDB_MAP_FULL:
-            set_error(error, WTREE_LIB, WTREE_MAP_FULL, 
+            set_error(error, WTREE_LIB, WTREE_MAP_FULL,
                      "Database map is full, resize needed");
             return WTREE_MAP_FULL;
         case MDB_TXN_FULL:
-            set_error(error, WTREE_LIB, WTREE_TXN_FULL, 
+            set_error(error, WTREE_LIB, WTREE_TXN_FULL,
                      "Transaction has too many dirty pages");
             return WTREE_TXN_FULL;
         case MDB_NOTFOUND:
-            set_error(error, WTREE_LIB, WTREE_KEY_NOT_FOUND, 
+            set_error(error, WTREE_LIB, WTREE_KEY_NOT_FOUND,
                      "Key not found");
             return WTREE_KEY_NOT_FOUND;
+        case MDB_KEYEXIST:
+            set_error(error, WTREE_LIB, WTREE_KEY_EXISTS,
+                     "Key already exists");
+            return WTREE_KEY_EXISTS;
         default:
             set_error(error, WTREE_LIB, mdb_rc, "%s", mdb_strerror(mdb_rc));
             return mdb_rc;
@@ -1014,17 +1018,21 @@ int wtree_iterator_delete(wtree_iterator_t *iter, gerror_t *error) {
 
 void wtree_iterator_close(wtree_iterator_t *iter) {
     if (!iter) return;
-    
+
     if (iter->cursor) {
         mdb_cursor_close(iter->cursor);
     }
-    
+
     // If iterator owns the transaction, clean it up
     if (iter->owns_txn && iter->txn) {
         wtree_txn_abort(iter->txn);
     }
-    
+
     free(iter);
+}
+
+wtree_txn_t* wtree_iterator_get_txn(wtree_iterator_t *iter) {
+    return iter ? iter->txn : NULL;
 }
 
 // ============= Utility Functions =============
@@ -1037,6 +1045,8 @@ const char* wtree_strerror(int error_code) {
             return "Transaction has too many dirty pages";
         case WTREE_KEY_NOT_FOUND:
             return "Key not found";
+        case WTREE_KEY_EXISTS:
+            return "Key already exists";
         default:
             return mdb_strerror(error_code);
     }

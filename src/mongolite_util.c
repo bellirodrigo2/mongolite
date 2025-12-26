@@ -162,7 +162,7 @@ char* _mongolite_index_tree_name(const char *collection_name, const char *index_
  * Tree Cache Operations
  * ============================================================ */
 
-wtree_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name) {
+wtree2_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name) {
     if (!db || !name) return NULL;
     mongolite_tree_cache_entry_t *entry = db->tree_cache;
     while (entry) {
@@ -176,7 +176,7 @@ wtree_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name) {
 
 int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
                               const char *tree_name, const bson_oid_t *oid,
-                              wtree_tree_t *tree, int64_t doc_count) {
+                              wtree2_tree_t *tree) {
     if (!db || !name || !tree_name || !tree) return MONGOLITE_EINVAL;
 
     /* Check if already exists */
@@ -190,7 +190,7 @@ int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
     entry->name = strdup(name);
     entry->tree_name = strdup(tree_name);
     entry->tree = tree;
-    entry->doc_count = doc_count;
+    /* Note: doc_count is now managed by wtree2 internally via wtree2_tree_count() */
     if (oid) {
         memcpy(&entry->oid, oid, sizeof(bson_oid_t));
     }
@@ -203,13 +203,13 @@ int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
     return MONGOLITE_OK;
 }
 
-/* Helper to free cached indexes array */
+/* Helper to free cached index specs array */
 static void _free_cached_indexes(mongolite_cached_index_t *indexes, size_t count) {
     if (!indexes) return;
     for (size_t i = 0; i < count; i++) {
         free(indexes[i].name);
         if (indexes[i].keys) bson_destroy(indexes[i].keys);
-        if (indexes[i].tree) wtree_tree_close(indexes[i].tree);
+        /* Note: Index trees are now managed by wtree2 internally */
     }
     free(indexes);
 }
@@ -222,7 +222,7 @@ void _mongolite_tree_cache_remove(mongolite_db_t *db, const char *name) {
         if (strcmp((*pp)->name, name) == 0) {
             mongolite_tree_cache_entry_t *to_remove = *pp;
             *pp = to_remove->next;
-            wtree_tree_close(to_remove->tree);
+            wtree2_tree_close(to_remove->tree);
             free(to_remove->name);
             free(to_remove->tree_name);
             _free_cached_indexes(to_remove->indexes, to_remove->index_count);
@@ -238,7 +238,7 @@ void _mongolite_tree_cache_clear(mongolite_db_t *db) {
     if (!db) return;
     while (db->tree_cache) {
         mongolite_tree_cache_entry_t *next = db->tree_cache->next;
-        wtree_tree_close(db->tree_cache->tree);
+        wtree2_tree_close(db->tree_cache->tree);
         free(db->tree_cache->name);
         free(db->tree_cache->tree_name);
         _free_cached_indexes(db->tree_cache->indexes, db->tree_cache->index_count);
@@ -248,33 +248,26 @@ void _mongolite_tree_cache_clear(mongolite_db_t *db) {
     db->tree_cache_count = 0;
 }
 
-int64_t _mongolite_tree_cache_get_doc_count(mongolite_db_t *db, const char *name) {
+/*
+ * Get doc count for a collection from wtree2.
+ * Note: wtree2 now manages the count internally.
+ */
+int64_t mongolite_get_collection_doc_count(mongolite_db_t *db, const char *name) {
     if (!db || !name) return -1;
-    mongolite_tree_cache_entry_t *entry = db->tree_cache;
-    while (entry) {
-        if (strcmp(entry->name, name) == 0) {
-            return entry->doc_count;
-        }
-        entry = entry->next;
+    wtree2_tree_t *tree = _mongolite_tree_cache_get(db, name);
+    if (!tree) {
+        /* Try to open the collection tree */
+        tree = _mongolite_get_collection_tree(db, name, NULL);
+        if (!tree) return -1;
     }
-    return -1;  /* Not found */
-}
-
-void _mongolite_tree_cache_update_doc_count(mongolite_db_t *db, const char *name, int64_t delta) {
-    if (!db || !name) return;
-    mongolite_tree_cache_entry_t *entry = db->tree_cache;
-    while (entry) {
-        if (strcmp(entry->name, name) == 0) {
-            entry->doc_count += delta;
-            if (entry->doc_count < 0) entry->doc_count = 0;
-            return;
-        }
-        entry = entry->next;
-    }
+    return wtree2_tree_count(tree);
 }
 
 /* ============================================================
- * Index Cache Operations (Phase 3)
+ * Index Specs Cache Operations (for query optimization)
+ *
+ * Note: Index trees are now managed by wtree2 internally.
+ * This cache only stores index specs for query optimization.
  * ============================================================ */
 
 /* Helper to find cache entry by name */
@@ -290,9 +283,11 @@ static mongolite_tree_cache_entry_t* _find_cache_entry(mongolite_db_t *db, const
 }
 
 /*
- * Get cached indexes for a collection.
+ * Get cached index specs for a collection.
  * Loads from schema on first access, returns cached array on subsequent calls.
  * Returns pointer to internal array (do not free).
+ *
+ * Note: Index trees are managed by wtree2 - this just caches specs for query optimization.
  */
 mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
                                                          const char *collection,
@@ -306,7 +301,7 @@ mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
     mongolite_tree_cache_entry_t *entry = _find_cache_entry(db, collection);
     if (!entry) {
         /* Collection not in cache - need to open it first */
-        wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+        wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
         if (!tree) {
             *out_count = 0;
             return NULL;
@@ -370,7 +365,7 @@ mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
         return NULL;
     }
 
-    /* Populate cached indexes */
+    /* Populate cached index specs (no tree handles - wtree2 manages those) */
     size_t idx = 0;
     bson_iter_t iter;
     if (bson_iter_init(&iter, schema.indexes)) {
@@ -396,21 +391,9 @@ mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
                     continue;
                 }
 
-                /* Open the index tree with MDB_DUPSORT for multi-value support */
-                char *tree_name = _mongolite_index_tree_name(collection, name);
-                wtree_tree_t *idx_tree = NULL;
-                if (tree_name) {
-                    idx_tree = wtree_tree_create(db->wdb, tree_name, MDB_DUPSORT, NULL);
-                    if (idx_tree) {
-                        /* Set the same comparator used during creation */
-                        wtree_tree_set_compare(idx_tree, _mongolite_index_compare, NULL);
-                    }
-                    free(tree_name);
-                }
-
+                /* Just store the spec - wtree2 manages the actual index tree */
                 entry->indexes[idx].name = name;
                 entry->indexes[idx].keys = keys;
-                entry->indexes[idx].tree = idx_tree;
                 entry->indexes[idx].unique = config.unique;
                 entry->indexes[idx].sparse = config.sparse;
                 idx++;

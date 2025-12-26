@@ -59,15 +59,15 @@ bool _mongolite_is_id_query(const bson_t *filter, bson_oid_t *out_oid) {
  * ============================================================ */
 
 MONGOLITE_HOT
-bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree_tree_t *tree,
+bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree2_tree_t *tree,
                                const bson_oid_t *oid, gerror_t *error) {
-    wtree_txn_t *txn = _mongolite_get_read_txn(db, error);
+    wtree2_txn_t *txn = _mongolite_get_read_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) return NULL;
 
     const void *value;
     size_t value_size;
-    int rc = wtree_get_txn(txn, tree, oid->bytes, sizeof(oid->bytes),
-                           &value, &value_size, error);
+    int rc = wtree2_get_txn(txn, tree, oid->bytes, sizeof(oid->bytes),
+                            &value, &value_size, error);
 
     if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_release_read_txn(db, txn);
@@ -85,7 +85,7 @@ bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree_tree_t *tree,
  * Internal: Full scan to find first matching document
  * ============================================================ */
 
-static bson_t* _find_one_scan(mongolite_db_t *db, wtree_tree_t *tree,
+static bson_t* _find_one_scan(mongolite_db_t *db, wtree2_tree_t *tree,
                                const bson_t *filter, gerror_t *error) {
     /* Create matcher if we have a filter */
     mongoc_matcher_t *matcher = NULL;
@@ -99,13 +99,13 @@ static bson_t* _find_one_scan(mongolite_db_t *db, wtree_tree_t *tree,
         }
     }
 
-    wtree_txn_t *txn = _mongolite_get_read_txn(db, error);
+    wtree2_txn_t *txn = _mongolite_get_read_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) {
         if (matcher) mongoc_matcher_destroy(matcher);
         return NULL;
     }
 
-    wtree_iterator_t *iter = wtree_iterator_create_with_txn(tree, txn, error);
+    wtree2_iterator_t *iter = wtree2_iterator_create_with_txn(tree, txn, error);
     if (MONGOLITE_UNLIKELY(!iter)) {
         _mongolite_release_read_txn(db, txn);
         if (matcher) mongoc_matcher_destroy(matcher);
@@ -114,12 +114,12 @@ static bson_t* _find_one_scan(mongolite_db_t *db, wtree_tree_t *tree,
 
     bson_t *result = NULL;
 
-    if (MONGOLITE_LIKELY(wtree_iterator_first(iter))) {
+    if (MONGOLITE_LIKELY(wtree2_iterator_first(iter))) {
         do {
             const void *value;
             size_t value_size;
 
-            if (MONGOLITE_UNLIKELY(!wtree_iterator_value(iter, &value, &value_size))) {
+            if (MONGOLITE_UNLIKELY(!wtree2_iterator_value(iter, &value, &value_size))) {
                 continue;
             }
 
@@ -140,10 +140,10 @@ static bson_t* _find_one_scan(mongolite_db_t *db, wtree_tree_t *tree,
                 result = bson_copy(&doc);
                 break;
             }
-        } while (wtree_iterator_next(iter));
+        } while (wtree2_iterator_next(iter));
     }
 
-    wtree_iterator_close(iter);
+    wtree2_iterator_close(iter);
     _mongolite_release_read_txn(db, txn);
     if (matcher) mongoc_matcher_destroy(matcher);
 
@@ -165,8 +165,8 @@ bson_t* mongolite_find_one(mongolite_db_t *db, const char *collection,
 
     _mongolite_lock(db);
 
-    /* Get collection tree */
-    wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree2) */
+    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
         _mongolite_unlock(db);
         return NULL;
@@ -281,8 +281,8 @@ mongolite_cursor_t* mongolite_find(mongolite_db_t *db, const char *collection,
 
     _mongolite_lock(db);
 
-    /* Get collection tree */
-    wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree2) */
+    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
         _mongolite_unlock(db);
         return NULL;
@@ -301,7 +301,7 @@ mongolite_cursor_t* mongolite_find(mongolite_db_t *db, const char *collection,
     cursor->collection_name = strdup(collection);
 
     /* Create read transaction */
-    cursor->txn = wtree_txn_begin(db->wdb, false, error);
+    cursor->txn = wtree2_txn_begin(db->wdb, false, error);
     if (!cursor->txn) {
         free(cursor->collection_name);
         free(cursor);
@@ -311,9 +311,9 @@ mongolite_cursor_t* mongolite_find(mongolite_db_t *db, const char *collection,
     cursor->owns_txn = true;
 
     /* Create iterator */
-    cursor->iter = wtree_iterator_create_with_txn(tree, cursor->txn, error);
+    cursor->iter = wtree2_iterator_create_with_txn(tree, cursor->txn, error);
     if (!cursor->iter) {
-        wtree_txn_abort(cursor->txn);
+        wtree2_txn_abort(cursor->txn);
         free(cursor->collection_name);
         free(cursor);
         _mongolite_unlock(db);
@@ -325,8 +325,8 @@ mongolite_cursor_t* mongolite_find(mongolite_db_t *db, const char *collection,
         bson_error_t bson_err;
         cursor->matcher = mongoc_matcher_new(filter, &bson_err);
         if (!cursor->matcher) {
-            wtree_iterator_close(cursor->iter);
-            wtree_txn_abort(cursor->txn);
+            wtree2_iterator_close(cursor->iter);
+            wtree2_txn_abort(cursor->txn);
             free(cursor->collection_name);
             free(cursor);
             _mongolite_unlock(db);

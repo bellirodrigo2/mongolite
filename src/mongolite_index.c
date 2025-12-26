@@ -9,6 +9,7 @@
  */
 
 #include "mongolite_internal.h"
+#include "wtree2.h"
 #include "key_compare.h"
 #include "macros.h"
 #include <stdlib.h>
@@ -496,122 +497,14 @@ static bson_t* _remove_index_from_array(const bson_t *existing, const char *name
 }
 
 /*
- * Helper: Populate index tree from existing documents in collection
- *
- * Scans all documents and inserts them into the index.
- * With DUPSORT: key = indexed fields, value = document _id (raw OID)
- *
- * Returns: MONGOLITE_OK on success, error code on failure
- */
-static int _populate_index_from_collection(
-    mongolite_db_t *db,
-    wtree_tree_t *col_tree,
-    wtree_tree_t *index_tree,
-    const bson_t *keys,
-    bool is_unique,
-    bool is_sparse,
-    const char *index_name,
-    gerror_t *error)
-{
-    wtree_txn_t *txn = wtree_txn_begin(db->wdb, true, error);
-    if (!txn) {
-        return MONGOLITE_ERROR;
-    }
-
-    wtree_iterator_t *iter = wtree_iterator_create_with_txn(col_tree, txn, error);
-    if (!iter) {
-        wtree_txn_abort(txn);
-        return MONGOLITE_ERROR;
-    }
-
-    int rc = MONGOLITE_OK;
-
-    if (wtree_iterator_first(iter)) {
-        do {
-            const void *doc_data;
-            size_t doc_len;
-            if (!wtree_iterator_value(iter, &doc_data, &doc_len)) continue;
-
-            bson_t doc;
-            if (!bson_init_static(&doc, doc_data, doc_len)) continue;
-
-            /* Check if document should be indexed (sparse handling) */
-            if (!_should_index_document(&doc, keys, is_sparse)) continue;
-
-            /* Build index key (just indexed fields, no _id - DUPSORT handles duplicates) */
-            bson_t *idx_key = _build_index_key(&doc, keys, false);
-            if (!idx_key) continue;
-
-            /* For unique indexes, check if key already exists */
-            if (is_unique) {
-                const void *existing_val;
-                size_t existing_len;
-                int get_rc = wtree_get_txn(txn, index_tree,
-                                           bson_get_data(idx_key), idx_key->len,
-                                           &existing_val, &existing_len, NULL);
-                if (get_rc == 0) {
-                    /* Key exists - duplicate violation */
-                    bson_destroy(idx_key);
-                    wtree_iterator_close(iter);
-                    wtree_txn_abort(txn);
-                    set_error(error, MONGOLITE_LIB, MONGOLITE_EINDEX,
-                             "Duplicate key violation for unique index '%s'", index_name);
-                    return MONGOLITE_EINDEX;
-                }
-            }
-
-            /* Build index value (just the _id for document lookup) */
-            size_t value_len;
-            uint8_t *value_data = _index_value_from_doc(&doc, &value_len);
-            if (!value_data) {
-                bson_destroy(idx_key);
-                continue;
-            }
-
-            /* Insert into index tree (DUPSORT allows multiple values per key) */
-            rc = wtree_insert_one_txn(txn, index_tree,
-                                      bson_get_data(idx_key), idx_key->len,
-                                      value_data, value_len, error);
-
-            free(value_data);
-            bson_destroy(idx_key);
-
-            if (rc != 0) {
-                wtree_iterator_close(iter);
-                wtree_txn_abort(txn);
-                return rc;
-            }
-        } while (wtree_iterator_next(iter));
-    }
-
-    wtree_iterator_close(iter);
-
-    /* Commit the index population */
-    rc = wtree_txn_commit(txn, error);
-    return rc;
-}
-
-/*
- * Helper: Cleanup index creation resources on failure
- */
-static void _cleanup_failed_index(mongolite_db_t *db, wtree_tree_t *tree, const char *tree_name) {
-    if (tree) {
-        wtree_tree_close(tree);
-    }
-    if (tree_name) {
-        wtree_tree_delete(db->wdb, tree_name, NULL);
-    }
-}
-
-/*
  * mongolite_create_index - Create an index on a collection
  *
- * Steps:
+ * Uses wtree2's built-in index management:
  * 1. Validate parameters
  * 2. Generate index name if not provided
  * 3. Check collection exists and index doesn't exist
- * 4. Create index tree with custom comparator
- * 5. Scan all documents and populate index
+ * 4. Register index with wtree2_tree_add_index
+ * 5. Populate from existing documents with wtree2_tree_populate_index
  * 6. Update collection schema with new index
  */
 int mongolite_create_index(mongolite_db_t *db, const char *collection,
@@ -629,8 +522,7 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
 
     int rc = MONGOLITE_OK;
     char *index_name = NULL;
-    char *tree_name = NULL;
-    wtree_tree_t *index_tree = NULL;
+    bson_t *keys_copy = NULL;
     bson_t *index_spec = NULL;
     bson_t *new_indexes = NULL;
 
@@ -674,64 +566,66 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
         goto cleanup;
     }
 
-    /* Create tree name: idx:<collection>:<index_name> */
-    tree_name = _mongolite_index_tree_name(collection, index_name);
-    if (!tree_name) {
+    /* Get collection tree (wtree2) */
+    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    if (!tree) {
+        rc = MONGOLITE_ERROR;
+        _mongolite_schema_entry_free(&col_entry);
+        goto cleanup;
+    }
+
+    /* Copy keys for use as user_data in callback (wtree2 stores this) */
+    keys_copy = bson_copy(keys);
+    if (!keys_copy) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
-                 "Failed to create tree name");
+                 "Failed to copy index keys");
         rc = MONGOLITE_ENOMEM;
         _mongolite_schema_entry_free(&col_entry);
         goto cleanup;
     }
 
-    /* Create the index tree with MDB_DUPSORT for efficient multi-value handling
-     * Key: extracted index fields (BSON)
-     * Value: document _id (raw OID bytes - 12 bytes)
-     * Multiple documents with same index key = multiple values under one key
-     */
-    index_tree = wtree_tree_create(db->wdb, tree_name, MDB_DUPSORT, error);
-    if (!index_tree) {
-        rc = MONGOLITE_ERROR;
-        _mongolite_schema_entry_free(&col_entry);
-        goto cleanup;
-    }
+    /* Configure index for wtree2 */
+    bool is_unique = config && config->unique;
+    bool is_sparse = config && config->sparse;
 
-    /* Set custom comparator for MongoDB-style key ordering */
-    rc = wtree_tree_set_compare(index_tree, _mongolite_index_compare, error);
+    wtree2_index_config_t idx_config = {
+        .name = index_name,
+        .key_fn = is_sparse ? bson_index_key_extractor_sparse : bson_index_key_extractor,
+        .user_data = keys_copy,
+        .unique = is_unique,
+        .sparse = is_sparse,
+        .compare = _mongolite_index_compare
+    };
+
+    /* Register index with wtree2 */
+    rc = wtree2_tree_add_index(tree, &idx_config, error);
     if (rc != 0) {
-        _cleanup_failed_index(db, index_tree, tree_name);
+        bson_destroy(keys_copy);
+        keys_copy = NULL;
         _mongolite_schema_entry_free(&col_entry);
-        goto cleanup;
-    }
-
-    /* Note: MDB_DUPSORT uses default memcmp for values, which is perfect for
-     * fixed 12-byte OIDs. No custom dupsort comparator needed. */
-
-    /* Get collection tree to scan documents */
-    wtree_tree_t *col_tree = _mongolite_get_collection_tree(db, collection, error);
-    if (!col_tree) {
-        _cleanup_failed_index(db, index_tree, tree_name);
-        rc = MONGOLITE_ERROR;
-        _mongolite_schema_entry_free(&col_entry);
+        rc = _mongolite_translate_wtree2_error(rc);
         goto cleanup;
     }
 
     /* Populate index from existing documents */
-    bool is_unique = config && config->unique;
-    bool is_sparse = config && config->sparse;
-
-    rc = _populate_index_from_collection(db, col_tree, index_tree, keys,
-                                          is_unique, is_sparse, index_name, error);
+    rc = wtree2_tree_populate_index(tree, index_name, error);
     if (rc != 0) {
-        _cleanup_failed_index(db, index_tree, tree_name);
+        /* Drop the partially created index */
+        wtree2_tree_drop_index(tree, index_name, NULL);
+        bson_destroy(keys_copy);
+        keys_copy = NULL;
         _mongolite_schema_entry_free(&col_entry);
+        /* Translate wtree2 error codes to mongolite error codes */
+        rc = _mongolite_translate_wtree2_error(rc);
         goto cleanup;
     }
 
     /* Create index spec for schema */
     index_spec = _index_spec_to_bson(index_name, keys, config);
     if (!index_spec) {
-        _cleanup_failed_index(db, index_tree, tree_name);
+        wtree2_tree_drop_index(tree, index_name, NULL);
+        bson_destroy(keys_copy);
+        keys_copy = NULL;
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
                  "Failed to create index spec");
         rc = MONGOLITE_ENOMEM;
@@ -742,7 +636,9 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
     /* Add index to collection's indexes array */
     new_indexes = _add_index_to_array(col_entry.indexes, index_spec);
     if (!new_indexes) {
-        _cleanup_failed_index(db, index_tree, tree_name);
+        wtree2_tree_drop_index(tree, index_name, NULL);
+        bson_destroy(keys_copy);
+        keys_copy = NULL;
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
                  "Failed to update indexes array");
         rc = MONGOLITE_ENOMEM;
@@ -760,15 +656,17 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
 
     rc = _mongolite_schema_put(db, &col_entry, error);
     if (rc != 0) {
-        _cleanup_failed_index(db, index_tree, tree_name);
+        wtree2_tree_drop_index(tree, index_name, NULL);
+        bson_destroy(keys_copy);
+        keys_copy = NULL;
         _mongolite_schema_entry_free(&col_entry);
         goto cleanup;
     }
 
     _mongolite_schema_entry_free(&col_entry);
 
-    /* Close the index tree handle (can be reopened later) */
-    wtree_tree_close(index_tree);
+    /* Note: keys_copy ownership is transferred to wtree2 - do not free */
+    keys_copy = NULL;
 
     /* Invalidate index cache so it gets reloaded with new index */
     _mongolite_invalidate_index_cache(db, collection);
@@ -777,7 +675,7 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
 
 cleanup:
     free(index_name);
-    free(tree_name);
+    if (keys_copy) bson_destroy(keys_copy);
     if (index_spec) bson_destroy(index_spec);
     if (new_indexes) bson_destroy(new_indexes);
     _mongolite_unlock(db);
@@ -787,11 +685,11 @@ cleanup:
 /*
  * mongolite_drop_index - Drop an index from a collection
  *
- * Steps:
+ * Uses wtree2's built-in index management:
  * 1. Validate parameters
  * 2. Check collection exists and index exists
  * 3. Prevent dropping _id index
- * 4. Delete index tree
+ * 4. Drop index via wtree2_tree_drop_index
  * 5. Update collection schema
  */
 int mongolite_drop_index(mongolite_db_t *db, const char *collection,
@@ -807,7 +705,6 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
     }
 
     int rc = MONGOLITE_OK;
-    char *tree_name = NULL;
     bson_t *new_indexes = NULL;
 
     _mongolite_lock(db);
@@ -829,7 +726,7 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
         return MONGOLITE_EINVAL;
     }
 
-    /* Check if index exists */
+    /* Check if index exists in schema */
     if (!_index_exists(col_entry.indexes, index_name)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOTFOUND,
                  "Index '%s' not found on collection '%s'", index_name, collection);
@@ -838,23 +735,17 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
         return MONGOLITE_ENOTFOUND;
     }
 
-    /* Build tree name */
-    tree_name = _mongolite_index_tree_name(collection, index_name);
-    if (!tree_name) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
-                 "Failed to create tree name");
+    /* Get collection tree (wtree2) */
+    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    if (!tree) {
         _mongolite_schema_entry_free(&col_entry);
         _mongolite_unlock(db);
-        return MONGOLITE_ENOMEM;
+        return MONGOLITE_ERROR;
     }
 
-    /* Remove index from tree cache if cached */
-    _mongolite_tree_cache_remove(db, tree_name);
-
-    /* Delete the index tree */
-    rc = wtree_tree_delete(db->wdb, tree_name, error);
-    if (rc != 0 && rc != WTREE_KEY_NOT_FOUND) {
-        free(tree_name);
+    /* Drop index via wtree2 */
+    rc = wtree2_tree_drop_index(tree, index_name, error);
+    if (rc != 0 && rc != WTREE2_ENOTFOUND) {
         _mongolite_schema_entry_free(&col_entry);
         _mongolite_unlock(db);
         return rc;
@@ -865,7 +756,6 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
     if (!new_indexes) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
                  "Failed to update indexes array");
-        free(tree_name);
         _mongolite_schema_entry_free(&col_entry);
         _mongolite_unlock(db);
         return MONGOLITE_ENOMEM;
@@ -883,329 +773,16 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
     /* Invalidate index cache so it gets reloaded without dropped index */
     _mongolite_invalidate_index_cache(db, collection);
 
-    free(tree_name);
     _mongolite_schema_entry_free(&col_entry);
     _mongolite_unlock(db);
 
     return rc;
 }
 
-/* ============================================================
- * Phase 3: Index Maintenance on CRUD
- * ============================================================ */
-
-/*
- * _mongolite_index_insert - Maintain indexes after document insert
- *
- * Called within an existing transaction after document is inserted.
- * For each index on the collection:
- *   1. Check if document should be indexed (sparse handling)
- *   2. Check unique constraint if applicable (just key existence with DUPSORT)
- *   3. Insert index entry
- *
- * With DUPSORT:
- * - Key = extracted index fields (no _id)
- * - Value = document _id (raw 12-byte OID)
- * - Multiple docs with same key = multiple values under one key
+/* NOTE: Index maintenance functions (_mongolite_index_insert/delete/update)
+ * have been removed. With wtree2, index maintenance is handled automatically
+ * by wtree2_insert_one_txn, wtree2_update_txn, and wtree2_delete_one_txn.
  */
-int _mongolite_index_insert(mongolite_db_t *db, wtree_txn_t *txn,
-                             const char *collection, const bson_t *doc,
-                             gerror_t *error) {
-    if (!db || !txn || !collection || !doc) {
-        return MONGOLITE_OK;  /* Nothing to do */
-    }
-
-    /* Get cached indexes for this collection */
-    size_t index_count = 0;
-    mongolite_cached_index_t *indexes = _mongolite_get_cached_indexes(db, collection, &index_count, error);
-
-    if (index_count == 0 || !indexes) {
-        return MONGOLITE_OK;  /* No secondary indexes */
-    }
-
-    /* OPTIMIZATION: Pre-extract _id once for all indexes */
-    bson_iter_t id_iter;
-    if (MONGOLITE_UNLIKELY(!bson_iter_init_find(&id_iter, doc, "_id"))) {
-        return MONGOLITE_OK;  /* No _id, can't index */
-    }
-
-    /* For OID type, prepare raw bytes (most common case) */
-    bool is_oid = BSON_ITER_HOLDS_OID(&id_iter);
-    const bson_oid_t *doc_oid = is_oid ? bson_iter_oid(&id_iter) : NULL;
-
-    int rc = MONGOLITE_OK;
-
-    for (size_t i = 0; i < index_count; i++) {
-        mongolite_cached_index_t *idx = &indexes[i];
-
-        if (!idx->tree || !idx->keys) continue;
-
-        /* Check if document should be indexed (sparse handling) */
-        if (!_should_index_document(doc, idx->keys, idx->sparse)) {
-            continue;
-        }
-
-        /* Build index key (just indexed fields - DUPSORT handles duplicates via value) */
-        bson_t *idx_key = bson_extract_index_key(doc, idx->keys);
-        if (!idx_key) continue;
-
-        /* For unique indexes, check if key already exists */
-        if (idx->unique) {
-            const void *existing_val;
-            size_t existing_len;
-            int get_rc = wtree_get_txn(txn, idx->tree,
-                                       bson_get_data(idx_key), idx_key->len,
-                                       &existing_val, &existing_len, NULL);
-            if (get_rc == 0) {
-                /* Key exists - duplicate violation */
-                bson_destroy(idx_key);
-                set_error(error, MONGOLITE_LIB, MONGOLITE_EINDEX,
-                         "Duplicate key error on index '%s'", idx->name);
-                return MONGOLITE_EINDEX;
-            }
-        }
-
-        /* OPTIMIZATION: Use raw OID bytes directly if possible */
-        if (is_oid) {
-            rc = wtree_insert_one_txn(txn, idx->tree,
-                                      bson_get_data(idx_key), idx_key->len,
-                                      doc_oid->bytes, sizeof(bson_oid_t), error);
-        } else {
-            /* Fallback for non-OID _id */
-            size_t value_len;
-            uint8_t *value_data = _index_value_from_doc(doc, &value_len);
-            if (value_data) {
-                rc = wtree_insert_one_txn(txn, idx->tree,
-                                          bson_get_data(idx_key), idx_key->len,
-                                          value_data, value_len, error);
-                free(value_data);
-            }
-        }
-
-        bson_destroy(idx_key);
-
-        if (rc != 0) {
-            return rc;
-        }
-    }
-
-    return MONGOLITE_OK;
-}
-
-/*
- * _mongolite_index_delete - Maintain indexes after document delete
- *
- * Called within an existing transaction before/after document is deleted.
- * With DUPSORT, we need to delete the specific key+value pair where
- * value = document _id (raw OID bytes).
- */
-int _mongolite_index_delete(mongolite_db_t *db, wtree_txn_t *txn,
-                             const char *collection, const bson_t *doc,
-                             gerror_t *error) {
-    if (!db || !txn || !collection || !doc) {
-        return MONGOLITE_OK;  /* Nothing to do */
-    }
-
-    /* Get cached indexes for this collection */
-    size_t index_count = 0;
-    mongolite_cached_index_t *indexes = _mongolite_get_cached_indexes(db, collection, &index_count, error);
-
-    if (index_count == 0 || !indexes) {
-        return MONGOLITE_OK;  /* No secondary indexes */
-    }
-
-    /* Pre-extract _id for deletion value */
-    bson_iter_t id_iter;
-    if (!bson_iter_init_find(&id_iter, doc, "_id")) {
-        return MONGOLITE_OK;  /* No _id, can't have been indexed */
-    }
-
-    bool is_oid = BSON_ITER_HOLDS_OID(&id_iter);
-    const bson_oid_t *doc_oid = is_oid ? bson_iter_oid(&id_iter) : NULL;
-
-    int rc = MONGOLITE_OK;
-
-    for (size_t i = 0; i < index_count; i++) {
-        mongolite_cached_index_t *idx = &indexes[i];
-
-        if (!idx->tree || !idx->keys) continue;
-
-        /* Check if document was indexed (sparse handling) */
-        if (!_should_index_document(doc, idx->keys, idx->sparse)) {
-            continue;
-        }
-
-        /* Build index key (just indexed fields - no _id with DUPSORT) */
-        bson_t *idx_key = _build_index_key(doc, idx->keys, false);
-        if (!idx_key) continue;
-
-        /* Delete specific key+value pair from DUPSORT tree */
-        bool deleted = false;
-        if (is_oid) {
-            rc = wtree_delete_dup_txn(txn, idx->tree,
-                                       bson_get_data(idx_key), idx_key->len,
-                                       doc_oid->bytes, sizeof(bson_oid_t),
-                                       &deleted, error);
-        } else {
-            /* Fallback for non-OID _id */
-            size_t value_len;
-            uint8_t *value_data = _index_value_from_doc(doc, &value_len);
-            if (value_data) {
-                rc = wtree_delete_dup_txn(txn, idx->tree,
-                                           bson_get_data(idx_key), idx_key->len,
-                                           value_data, value_len,
-                                           &deleted, error);
-                free(value_data);
-            }
-        }
-
-        bson_destroy(idx_key);
-
-        if (rc != 0) {
-            return rc;
-        }
-        /* Note: We don't fail if pair wasn't found - document might not have been indexed */
-    }
-
-    return MONGOLITE_OK;
-}
-
-/*
- * _mongolite_index_update - Maintain indexes after document update
- *
- * Called within an existing transaction.
- * With DUPSORT, we delete the old key+value pair and insert the new one.
- * Key = indexed fields, Value = document _id (raw OID).
- */
-int _mongolite_index_update(mongolite_db_t *db, wtree_txn_t *txn,
-                             const char *collection,
-                             const bson_t *old_doc, const bson_t *new_doc,
-                             gerror_t *error) {
-    if (!db || !txn || !collection || !old_doc || !new_doc) {
-        return MONGOLITE_OK;  /* Nothing to do */
-    }
-
-    /* Get cached indexes for this collection */
-    size_t index_count = 0;
-    mongolite_cached_index_t *indexes = _mongolite_get_cached_indexes(db, collection, &index_count, error);
-
-    if (index_count == 0 || !indexes) {
-        return MONGOLITE_OK;  /* No secondary indexes */
-    }
-
-    /* Pre-extract _id from old doc (for deletion) */
-    bson_iter_t old_id_iter;
-    bool old_has_id = bson_iter_init_find(&old_id_iter, old_doc, "_id");
-    bool old_is_oid = old_has_id && BSON_ITER_HOLDS_OID(&old_id_iter);
-    const bson_oid_t *old_oid = old_is_oid ? bson_iter_oid(&old_id_iter) : NULL;
-
-    /* Pre-extract _id from new doc (for insertion) */
-    bson_iter_t new_id_iter;
-    bool new_has_id = bson_iter_init_find(&new_id_iter, new_doc, "_id");
-    bool new_is_oid = new_has_id && BSON_ITER_HOLDS_OID(&new_id_iter);
-    const bson_oid_t *new_oid = new_is_oid ? bson_iter_oid(&new_id_iter) : NULL;
-
-    int rc = MONGOLITE_OK;
-
-    for (size_t i = 0; i < index_count; i++) {
-        mongolite_cached_index_t *idx = &indexes[i];
-
-        if (!idx->tree || !idx->keys) continue;
-
-        bool old_indexed = _should_index_document(old_doc, idx->keys, idx->sparse);
-        bool new_indexed = _should_index_document(new_doc, idx->keys, idx->sparse);
-
-        /* Build keys for comparison (no _id with DUPSORT) */
-        bson_t *old_key = old_indexed ? _build_index_key(old_doc, idx->keys, false) : NULL;
-        bson_t *new_key = new_indexed ? _build_index_key(new_doc, idx->keys, false) : NULL;
-
-        /* Check if keys are the same (no update needed) */
-        bool keys_equal = false;
-        if (old_key && new_key) {
-            keys_equal = (bson_compare(old_key, new_key) == 0);
-        }
-
-        if (keys_equal) {
-            /* No change in index key */
-            if (old_key) bson_destroy(old_key);
-            if (new_key) bson_destroy(new_key);
-            continue;
-        }
-
-        /* Delete old entry if it existed */
-        if (old_key && old_has_id) {
-            bool deleted = false;
-            if (old_is_oid) {
-                rc = wtree_delete_dup_txn(txn, idx->tree,
-                                           bson_get_data(old_key), old_key->len,
-                                           old_oid->bytes, sizeof(bson_oid_t),
-                                           &deleted, error);
-            } else {
-                size_t value_len;
-                uint8_t *value_data = _index_value_from_doc(old_doc, &value_len);
-                if (value_data) {
-                    rc = wtree_delete_dup_txn(txn, idx->tree,
-                                               bson_get_data(old_key), old_key->len,
-                                               value_data, value_len,
-                                               &deleted, error);
-                    free(value_data);
-                }
-            }
-            bson_destroy(old_key);
-            if (rc != 0) {
-                if (new_key) bson_destroy(new_key);
-                return rc;
-            }
-        } else if (old_key) {
-            bson_destroy(old_key);
-        }
-
-        /* Insert new entry if document should be indexed */
-        if (new_key && new_has_id) {
-            /* Check unique constraint */
-            if (idx->unique) {
-                const void *existing_val;
-                size_t existing_len;
-                int get_rc = wtree_get_txn(txn, idx->tree,
-                                           bson_get_data(new_key), new_key->len,
-                                           &existing_val, &existing_len, NULL);
-                if (get_rc == 0) {
-                    /* Key exists - duplicate violation */
-                    bson_destroy(new_key);
-                    set_error(error, MONGOLITE_LIB, MONGOLITE_EINDEX,
-                             "Duplicate key error on index '%s'", idx->name);
-                    return MONGOLITE_EINDEX;
-                }
-            }
-
-            /* Insert with raw OID if possible */
-            if (new_is_oid) {
-                rc = wtree_insert_one_txn(txn, idx->tree,
-                                          bson_get_data(new_key), new_key->len,
-                                          new_oid->bytes, sizeof(bson_oid_t), error);
-            } else {
-                size_t value_len;
-                uint8_t *value_data = _index_value_from_doc(new_doc, &value_len);
-                if (value_data) {
-                    rc = wtree_insert_one_txn(txn, idx->tree,
-                                              bson_get_data(new_key), new_key->len,
-                                              value_data, value_len, error);
-                    free(value_data);
-                }
-            }
-
-            bson_destroy(new_key);
-
-            if (rc != 0) {
-                return rc;
-            }
-        } else if (new_key) {
-            bson_destroy(new_key);
-        }
-    }
-
-    return MONGOLITE_OK;
-}
 
 /* ============================================================
  * Phase 4: Query Optimization
@@ -1390,14 +967,14 @@ mongolite_cached_index_t* _find_best_index(mongolite_db_t *db, const char *colle
 /*
  * _find_one_with_index - Use index to find a single document
  *
- * Strategy:
+ * Uses wtree2 index seeking:
  *   1. Build lookup key from filter values
- *   2. Seek in index tree
- *   3. Get document _id from index value
+ *   2. Seek in index using wtree2_index_seek_range
+ *   3. Get document _id from index iterator
  *   4. Fetch document by _id from collection
  */
 bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
-                              wtree_tree_t *col_tree,
+                              wtree2_tree_t *col_tree,
                               mongolite_cached_index_t *index,
                               const bson_t *filter, gerror_t *error) {
     if (!db || !collection || !col_tree || !index || !filter) {
@@ -1410,49 +987,47 @@ bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
         return NULL;
     }
 
-    /* Get read transaction */
-    wtree_txn_t *txn = _mongolite_get_read_txn(db, error);
-    if (!txn) {
-        bson_destroy(lookup_key);
-        return NULL;
-    }
-
     bson_t *result = NULL;
 
-    /* Create iterator and seek to key */
-    wtree_iterator_t *iter = wtree_iterator_create_with_txn(index->tree, txn, error);
+    /* Seek in index using wtree2 */
+    wtree2_iterator_t *iter = wtree2_index_seek_range(
+        col_tree, index->name,
+        bson_get_data(lookup_key), lookup_key->len,
+        error);
+
     if (!iter) {
         bson_destroy(lookup_key);
-        _mongolite_release_read_txn(db, txn);
         return NULL;
     }
 
-    /* Seek to first matching key
-     * With DUPSORT, key = indexed fields only (no _id), value = raw OID
-     */
-    if (wtree_iterator_seek_range(iter, bson_get_data(lookup_key), lookup_key->len)) {
-        /* Found something - verify it's an exact match for the lookup key */
+    /* Check if we have a match */
+    if (wtree2_iterator_valid(iter)) {
+        /* Get the index key to verify exact match */
         const void *found_key;
         size_t found_len;
-        if (wtree_iterator_key(iter, &found_key, &found_len)) {
+        if (wtree2_iterator_key(iter, &found_key, &found_len)) {
             bson_t found_bson;
             if (bson_init_static(&found_bson, found_key, found_len)) {
-                /* With DUPSORT, key IS just the indexed fields - compare directly */
+                /* Verify exact match */
                 if (bson_compare_docs(lookup_key, &found_bson) == 0) {
-                    /* Match! Get the document _id from index value (raw OID) */
-                    const void *value;
-                    size_t value_len;
-                    if (wtree_iterator_value(iter, &value, &value_len)) {
-                        bson_oid_t doc_oid;
-                        if (_index_value_get_oid(value, value_len, &doc_oid)) {
-                            /* Fetch document by _id */
-                            const void *doc_data;
-                            size_t doc_len;
-                            int rc = wtree_get_txn(txn, col_tree,
-                                                   doc_oid.bytes, sizeof(doc_oid.bytes),
-                                                   &doc_data, &doc_len, error);
-                            if (rc == 0) {
-                                result = bson_new_from_data(doc_data, doc_len);
+                    /* Match! Get the main key (document _id) */
+                    const void *main_key;
+                    size_t main_key_len;
+                    if (wtree2_index_iterator_main_key(iter, &main_key, &main_key_len)) {
+                        /* main_key is the raw OID bytes */
+                        if (main_key_len == sizeof(bson_oid_t)) {
+                            /* Fetch document by _id using the SAME transaction as the iterator */
+                            wtree_txn_t *wtxn = wtree2_iterator_get_txn(iter);
+                            wtree_tree_t *main_tree = wtree2_tree_get_wtree(col_tree);
+                            if (wtxn && main_tree) {
+                                const void *doc_data;
+                                size_t doc_len;
+                                int rc = wtree_get_txn(wtxn, main_tree,
+                                                        main_key, main_key_len,
+                                                        &doc_data, &doc_len, error);
+                                if (rc == 0) {
+                                    result = bson_new_from_data(doc_data, doc_len);
+                                }
                             }
                         }
                     }
@@ -1461,9 +1036,8 @@ bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
         }
     }
 
-    wtree_iterator_close(iter);
+    wtree2_iterator_close(iter);
     bson_destroy(lookup_key);
-    _mongolite_release_read_txn(db, txn);
 
     return result;
 }

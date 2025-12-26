@@ -192,8 +192,9 @@ int _mongolite_schema_init(mongolite_db_t *db, gerror_t *error) {
         return MONGOLITE_EINVAL;
     }
 
-    /* Create or open the schema tree */
-    db->schema_tree = wtree_tree_create(db->wdb, MONGOLITE_SCHEMA_TREE, 0, error);
+    /* Create or open the schema tree (uses underlying wtree_db) */
+    wtree_db_t *wdb = wtree2_db_get_wtree(db->wdb);
+    db->schema_tree = wtree_tree_create(wdb, MONGOLITE_SCHEMA_TREE, 0, error);
     if (!db->schema_tree) {
         return MONGOLITE_ERROR;
     }
@@ -208,15 +209,16 @@ int _mongolite_schema_get(mongolite_db_t *db, const char *name,
         return MONGOLITE_EINVAL;
     }
 
-    wtree_txn_t *txn = _mongolite_get_read_txn(db, error);
-    if (!txn) return MONGOLITE_ERROR;
+    wtree2_txn_t *txn2 = _mongolite_get_read_txn(db, error);
+    if (!txn2) return MONGOLITE_ERROR;
+    wtree_txn_t *txn = wtree2_txn_get_wtree(txn2);
 
     const void *value;
     size_t value_size;
     int rc = wtree_get_txn(txn, db->schema_tree, name, strlen(name), &value, &value_size, error);
 
     if (rc != 0) {
-        _mongolite_abort_if_auto(db, txn);
+        _mongolite_release_read_txn(db, txn2);
         if (rc == WTREE_KEY_NOT_FOUND) {
             set_error(error, MONGOLITE_LIB, MONGOLITE_ENOTFOUND,
                      "Collection or index not found: %s", name);
@@ -228,13 +230,13 @@ int _mongolite_schema_get(mongolite_db_t *db, const char *name,
     /* Parse BSON document */
     bson_t doc;
     if (!bson_init_static(&doc, value, value_size)) {
-        _mongolite_abort_if_auto(db, txn);
+        _mongolite_release_read_txn(db, txn2);
         set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR, "Invalid BSON in schema");
         return MONGOLITE_ERROR;
     }
 
     rc = _mongolite_schema_entry_from_bson(&doc, entry, error);
-    _mongolite_abort_if_auto(db, txn);
+    _mongolite_release_read_txn(db, txn2);
 
     return rc;
 }
@@ -252,11 +254,12 @@ int _mongolite_schema_put(mongolite_db_t *db, const mongolite_schema_entry_t *en
         return MONGOLITE_ENOMEM;
     }
 
-    wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (!txn) {
+    wtree2_txn_t *txn2 = _mongolite_get_write_txn(db, error);
+    if (!txn2) {
         bson_destroy(doc);
         return MONGOLITE_ERROR;
     }
+    wtree_txn_t *txn = wtree2_txn_get_wtree(txn2);
 
     /* Use update (overwrite) instead of insert to allow updates */
     int rc = wtree_update_txn(txn, db->schema_tree,
@@ -266,11 +269,11 @@ int _mongolite_schema_put(mongolite_db_t *db, const mongolite_schema_entry_t *en
     bson_destroy(doc);
 
     if (rc != 0) {
-        _mongolite_abort_if_auto(db, txn);
+        _mongolite_abort_if_auto(db, txn2);
         return rc;
     }
 
-    return _mongolite_commit_if_auto(db, txn, error);
+    return _mongolite_commit_if_auto(db, txn2, error);
 }
 
 int _mongolite_schema_delete(mongolite_db_t *db, const char *name, gerror_t *error) {
@@ -279,26 +282,27 @@ int _mongolite_schema_delete(mongolite_db_t *db, const char *name, gerror_t *err
         return MONGOLITE_EINVAL;
     }
 
-    wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
-    if (!txn) return MONGOLITE_ERROR;
+    wtree2_txn_t *txn2 = _mongolite_get_write_txn(db, error);
+    if (!txn2) return MONGOLITE_ERROR;
+    wtree_txn_t *txn = wtree2_txn_get_wtree(txn2);
 
     bool deleted = false;
     int rc = wtree_delete_one_txn(txn, db->schema_tree,
                                    name, strlen(name), &deleted, error);
 
     if (rc != 0) {
-        _mongolite_abort_if_auto(db, txn);
+        _mongolite_abort_if_auto(db, txn2);
         return rc;
     }
 
     if (!deleted) {
-        _mongolite_abort_if_auto(db, txn);
+        _mongolite_abort_if_auto(db, txn2);
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOTFOUND,
                  "Schema entry not found: %s", name);
         return MONGOLITE_ENOTFOUND;
     }
 
-    return _mongolite_commit_if_auto(db, txn, error);
+    return _mongolite_commit_if_auto(db, txn2, error);
 }
 
 int _mongolite_schema_list(mongolite_db_t *db, char ***names, size_t *count,
@@ -311,12 +315,13 @@ int _mongolite_schema_list(mongolite_db_t *db, char ***names, size_t *count,
     *names = NULL;
     *count = 0;
 
-    wtree_txn_t *txn = _mongolite_get_read_txn(db, error);
-    if (!txn) return MONGOLITE_ERROR;
+    wtree2_txn_t *txn2 = _mongolite_get_read_txn(db, error);
+    if (!txn2) return MONGOLITE_ERROR;
+    wtree_txn_t *txn = wtree2_txn_get_wtree(txn2);
 
     wtree_iterator_t *iter = wtree_iterator_create_with_txn(db->schema_tree, txn, error);
     if (!iter) {
-        _mongolite_abort_if_auto(db, txn);
+        _mongolite_release_read_txn(db, txn2);
         return MONGOLITE_ERROR;
     }
 
@@ -347,7 +352,7 @@ int _mongolite_schema_list(mongolite_db_t *db, char ***names, size_t *count,
 
     if (total == 0) {
         wtree_iterator_close(iter);
-        _mongolite_abort_if_auto(db, txn);
+        _mongolite_release_read_txn(db, txn2);
         return MONGOLITE_OK;
     }
 
@@ -355,7 +360,7 @@ int _mongolite_schema_list(mongolite_db_t *db, char ***names, size_t *count,
     *names = calloc(total, sizeof(char*));
     if (!*names) {
         wtree_iterator_close(iter);
-        _mongolite_abort_if_auto(db, txn);
+        _mongolite_release_read_txn(db, txn2);
         set_error(error, "system", MONGOLITE_ENOMEM, "Failed to allocate names array");
         return MONGOLITE_ENOMEM;
     }
@@ -396,7 +401,7 @@ int _mongolite_schema_list(mongolite_db_t *db, char ***names, size_t *count,
 
     *count = idx;
     wtree_iterator_close(iter);
-    _mongolite_abort_if_auto(db, txn);
+    _mongolite_release_read_txn(db, txn2);
 
     return MONGOLITE_OK;
 }

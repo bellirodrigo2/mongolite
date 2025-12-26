@@ -29,7 +29,7 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
     if (MONGOLITE_LIKELY(_mongolite_is_id_query(filter, &doc_id))) {
         /* Fast path: direct _id lookup */
         _mongolite_lock(db);
-        wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+        wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
         if (MONGOLITE_LIKELY(tree)) {
             doc_to_delete = _mongolite_find_by_id(db, tree, &doc_id, error);
         }
@@ -58,48 +58,34 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
         return 0;  /* No match found - not an error */
     }
 
-    /* Get collection tree */
-    wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree2 - indexes maintained automatically) */
+    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (MONGOLITE_UNLIKELY(!tree)) {
         bson_destroy(doc_to_delete);
         _mongolite_unlock(db);
         return -1;
     }
 
-    /* Pre-load index cache before starting transaction (avoids read txn inside write txn) */
-    size_t index_count = 0;
-    (void)_mongolite_get_cached_indexes(db, collection, &index_count, error);
-
     /* Begin transaction */
-    wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
+    wtree2_txn_t *txn = _mongolite_get_write_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) {
         bson_destroy(doc_to_delete);
         _mongolite_unlock(db);
         return -1;
     }
 
-    /* Maintain secondary indexes (delete from indexes before deleting doc) */
-    int rc = _mongolite_index_delete(db, txn, collection, doc_to_delete, error);
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        bson_destroy(doc_to_delete);
-        _mongolite_abort_if_auto(db, txn);
-        _mongolite_unlock(db);
-        return -1;
-    }
-
-    /* Delete document */
-    bool deleted = false;
-    rc = wtree_delete_one_txn(txn, tree,
-                               doc_id.bytes, sizeof(doc_id.bytes),
-                               &deleted, error);
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        bson_destroy(doc_to_delete);
-        _mongolite_abort_if_auto(db, txn);
-        _mongolite_unlock(db);
-        return -1;
-    }
-
     bson_destroy(doc_to_delete);
+
+    /* Delete document via wtree2 (indexes maintained automatically) */
+    bool deleted = false;
+    int rc = wtree2_delete_one_txn(txn, tree,
+                                    doc_id.bytes, sizeof(doc_id.bytes),
+                                    &deleted, error);
+    if (MONGOLITE_UNLIKELY(rc != 0)) {
+        _mongolite_abort_if_auto(db, txn);
+        _mongolite_unlock(db);
+        return -1;
+    }
 
     /* Update doc count within the same transaction for atomicity */
     if (deleted) {
@@ -129,10 +115,9 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
     return 0;
 }
 
-/* Helper struct to store document info for deletion */
+/* Helper struct to store document id for deletion */
 typedef struct {
     bson_oid_t id;
-    bson_t *doc;  /* Full document (for index maintenance) */
 } delete_info_t;
 
 /* ============================================================
@@ -152,19 +137,15 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
     /* Lock database */
     _mongolite_lock(db);
 
-    /* Get collection tree */
-    wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree2 - indexes maintained automatically) */
+    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         return -1;
     }
 
-    /* Pre-load index cache before starting transaction (avoids read txn inside write txn) */
-    size_t index_count = 0;
-    (void)_mongolite_get_cached_indexes(db, collection, &index_count, error);
-
     /* Begin transaction */
-    wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
+    wtree2_txn_t *txn = _mongolite_get_write_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) {
         _mongolite_unlock(db);
         return -1;
@@ -179,7 +160,7 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Collect all documents to delete (need full docs for index maintenance) */
+    /* Collect all document IDs to delete (wtree2 handles index maintenance) */
     delete_info_t *docs = NULL;
     size_t n_docs = 0;
     size_t docs_capacity = 16;
@@ -204,10 +185,6 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
             docs_capacity *= 2;
             delete_info_t *new_docs = realloc(docs, sizeof(delete_info_t) * docs_capacity);
             if (MONGOLITE_UNLIKELY(!new_docs)) {
-                /* Free already collected docs */
-                for (size_t j = 0; j < n_docs; j++) {
-                    bson_destroy(docs[j].doc);
-                }
                 free(docs);
                 mongolite_cursor_destroy(cursor);
                 _mongolite_abort_if_auto(db, txn);
@@ -219,49 +196,22 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         }
 
         bson_oid_copy(&oid, &docs[n_docs].id);
-        docs[n_docs].doc = bson_copy(doc);
-        if (MONGOLITE_UNLIKELY(!docs[n_docs].doc)) {
-            for (size_t j = 0; j < n_docs; j++) {
-                bson_destroy(docs[j].doc);
-            }
-            free(docs);
-            mongolite_cursor_destroy(cursor);
-            _mongolite_abort_if_auto(db, txn);
-            _mongolite_unlock(db);
-            set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
-            return -1;
-        }
         n_docs++;
     }
 
     mongolite_cursor_destroy(cursor);
 
-    /* Now delete all collected documents */
+    /* Now delete all collected documents via wtree2 (indexes maintained automatically) */
     int64_t count = 0;
     int rc = 0;
 
     for (size_t i = 0; i < n_docs; i++) {
-        /* Maintain secondary indexes first */
-        rc = _mongolite_index_delete(db, txn, collection, docs[i].doc, error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            for (size_t j = 0; j < n_docs; j++) {
-                bson_destroy(docs[j].doc);
-            }
-            free(docs);
-            _mongolite_abort_if_auto(db, txn);
-            _mongolite_unlock(db);
-            return -1;
-        }
-
-        /* Delete the document */
+        /* Delete the document via wtree2 (indexes maintained automatically) */
         bool deleted = false;
-        rc = wtree_delete_one_txn(txn, tree,
-                                   docs[i].id.bytes, sizeof(docs[i].id.bytes),
-                                   &deleted, error);
+        rc = wtree2_delete_one_txn(txn, tree,
+                                    docs[i].id.bytes, sizeof(docs[i].id.bytes),
+                                    &deleted, error);
         if (MONGOLITE_UNLIKELY(rc != 0)) {
-            for (size_t j = 0; j < n_docs; j++) {
-                bson_destroy(docs[j].doc);
-            }
             free(docs);
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
@@ -273,10 +223,6 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         }
     }
 
-    /* Free collected documents */
-    for (size_t i = 0; i < n_docs; i++) {
-        bson_destroy(docs[i].doc);
-    }
     free(docs);
 
     /* Update doc count within the same transaction for atomicity */

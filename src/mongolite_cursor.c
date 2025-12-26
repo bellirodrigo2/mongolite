@@ -43,9 +43,9 @@ bool mongolite_cursor_next(mongolite_cursor_t *cursor, const bson_t **doc) {
     /* Start iteration if not started */
     bool has_entry;
     if (cursor->position == 0) {
-        has_entry = wtree_iterator_first(cursor->iter);
+        has_entry = wtree2_iterator_first(cursor->iter);
     } else {
-        has_entry = wtree_iterator_next(cursor->iter);
+        has_entry = wtree2_iterator_next(cursor->iter);
     }
 
     while (has_entry) {
@@ -54,15 +54,15 @@ bool mongolite_cursor_next(mongolite_cursor_t *cursor, const bson_t **doc) {
         const void *value;
         size_t value_size;
 
-        if (!wtree_iterator_value(cursor->iter, &value, &value_size)) {
-            has_entry = wtree_iterator_next(cursor->iter);
+        if (!wtree2_iterator_value(cursor->iter, &value, &value_size)) {
+            has_entry = wtree2_iterator_next(cursor->iter);
             continue;
         }
 
         /* Parse document */
         bson_t temp_doc;
         if (!bson_init_static(&temp_doc, value, value_size)) {
-            has_entry = wtree_iterator_next(cursor->iter);
+            has_entry = wtree2_iterator_next(cursor->iter);
             continue;
         }
 
@@ -73,13 +73,13 @@ bool mongolite_cursor_next(mongolite_cursor_t *cursor, const bson_t **doc) {
         }
 
         if (!matches) {
-            has_entry = wtree_iterator_next(cursor->iter);
+            has_entry = wtree2_iterator_next(cursor->iter);
             continue;
         }
 
         /* Handle skip */
         if (cursor->skip > 0 && (cursor->returned + cursor->skip) > cursor->position - 1) {
-            has_entry = wtree_iterator_next(cursor->iter);
+            has_entry = wtree2_iterator_next(cursor->iter);
             continue;
         }
 
@@ -140,12 +140,12 @@ void mongolite_cursor_destroy(mongolite_cursor_t *cursor) {
 
     /* Close iterator */
     if (cursor->iter) {
-        wtree_iterator_close(cursor->iter);
+        wtree2_iterator_close(cursor->iter);
     }
 
     /* Abort transaction if we own it */
     if (cursor->owns_txn && cursor->txn) {
-        wtree_txn_abort(cursor->txn);
+        wtree2_txn_abort(cursor->txn);
     }
 
     /* Free sort buffer if any */
@@ -173,9 +173,9 @@ void mongolite_cursor_destroy(mongolite_cursor_t *cursor) {
  * ============================================================ */
 
 mongolite_cursor_t* _mongolite_cursor_create_with_txn(mongolite_db_t *db,
-                                                       wtree_tree_t *tree,
+                                                       wtree2_tree_t *tree,
                                                        const char *collection,
-                                                       wtree_txn_t *txn,
+                                                       wtree2_txn_t *txn,
                                                        const bson_t *filter,
                                                        gerror_t *error) {
     if (!db || !tree || !collection || !txn) {
@@ -200,7 +200,7 @@ mongolite_cursor_t* _mongolite_cursor_create_with_txn(mongolite_db_t *db,
     cursor->owns_txn = false;  /* Important: don't abort/commit this txn */
 
     /* Create iterator using existing transaction */
-    cursor->iter = wtree_iterator_create_with_txn(tree, txn, error);
+    cursor->iter = wtree2_iterator_create_with_txn(tree, txn, error);
     if (!cursor->iter) {
         free(cursor->collection_name);
         free(cursor);
@@ -212,7 +212,7 @@ mongolite_cursor_t* _mongolite_cursor_create_with_txn(mongolite_db_t *db,
         bson_error_t bson_err;
         cursor->matcher = mongoc_matcher_new(filter, &bson_err);
         if (!cursor->matcher) {
-            wtree_iterator_close(cursor->iter);
+            wtree2_iterator_close(cursor->iter);
             free(cursor->collection_name);
             free(cursor);
             set_error(error, "bsonmatch", MONGOLITE_EQUERY,

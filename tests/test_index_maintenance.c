@@ -79,16 +79,31 @@ static int teardown(void **state) {
  * ============================================================ */
 
 static int count_index_entries(const char *collection, const char *index_name) {
-    char *tree_name = _mongolite_index_tree_name(collection, index_name);
-    if (!tree_name) return -1;
+    /* wtree2 uses the format: idx:<collection_tree>:<index_name>
+     * where collection_tree is col:<collection> */
+    char *col_tree = _mongolite_collection_tree_name(collection);
+    if (!col_tree) return -1;
+
+    /* Build wtree2-style index tree name: idx:col:<collection>:<index_name> */
+    size_t len = 4 + strlen(col_tree) + 1 + strlen(index_name) + 1;  /* "idx:" + tree + ":" + index + '\0' */
+    char *tree_name = malloc(len);
+    if (!tree_name) {
+        free(col_tree);
+        return -1;
+    }
+    snprintf(tree_name, len, "idx:%s:%s", col_tree, index_name);
+    free(col_tree);
+
+    /* Get underlying wtree_db from wtree2_db */
+    wtree_db_t *wdb = wtree2_db_get_wtree(g_db->wdb);
 
     /* Must use MDB_DUPSORT to properly iterate all key+value pairs */
-    wtree_tree_t *tree = wtree_tree_create(g_db->wdb, tree_name, MDB_DUPSORT, NULL);
+    wtree_tree_t *tree = wtree_tree_create(wdb, tree_name, MDB_DUPSORT, NULL);
     free(tree_name);
     if (!tree) return -1;
 
     /* Create a dedicated read transaction */
-    wtree_txn_t *txn = wtree_txn_begin(g_db->wdb, false, NULL);
+    wtree_txn_t *txn = wtree_txn_begin(wdb, false, NULL);
     if (!txn) {
         wtree_tree_close(tree);
         return -1;

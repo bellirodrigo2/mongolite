@@ -411,9 +411,9 @@ int wtree_insert_one(wtree_tree_t *tree, const void *key, size_t key_size,
     /* Check for duplicate in this tree */
     if (mock_wtree_store_get_for_tree(tree, key, key_size, NULL, NULL)) {
         if (error) {
-            set_error(error, "wtree", MDB_KEYEXIST, "Key already exists");
+            set_error(error, "wtree", WTREE_KEY_EXISTS, "Key already exists");
         }
-        return MDB_KEYEXIST;
+        return WTREE_KEY_EXISTS;
     }
 
     mock_wtree_store_put_for_tree(tree, key, key_size, value, value_size);
@@ -755,6 +755,11 @@ void wtree_iterator_close(wtree_iterator_t *iter) {
     }
 }
 
+wtree_txn_t* wtree_iterator_get_txn(wtree_iterator_t *iter) {
+    mock_wtree_iterator_t *miter = (mock_wtree_iterator_t*)iter;
+    return miter ? (wtree_txn_t*)miter->txn : NULL;
+}
+
 /* Utility Functions */
 
 const char* wtree_strerror(int error_code) {
@@ -763,7 +768,8 @@ const char* wtree_strerror(int error_code) {
         case WTREE_MAP_FULL: return "Database map is full";
         case WTREE_TXN_FULL: return "Transaction is full";
         case WTREE_KEY_NOT_FOUND: return "Key not found";
-        case MDB_KEYEXIST: return "Key already exists";
+        case WTREE_KEY_EXISTS: return "Key already exists";
+        case MDB_KEYEXIST: return "Key already exists (MDB)";
         default: return "Unknown error";
     }
 }

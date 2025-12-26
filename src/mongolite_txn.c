@@ -16,11 +16,11 @@
 #define MONGOLITE_LIB "mongolite"
 
 /* ============================================================
- * Transaction Helpers
+ * Transaction Helpers (wtree2)
  * ============================================================ */
 
 MONGOLITE_HOT
-wtree_txn_t* _mongolite_get_write_txn(mongolite_db_t *db, gerror_t *error) {
+wtree2_txn_t* _mongolite_get_write_txn(mongolite_db_t *db, gerror_t *error) {
     if (MONGOLITE_UNLIKELY(!db)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Database is NULL");
         return NULL;
@@ -35,22 +35,22 @@ wtree_txn_t* _mongolite_get_write_txn(mongolite_db_t *db, gerror_t *error) {
      * which can cause issues with write transactions.
      */
     if (db->read_txn_pool) {
-        wtree_txn_abort(db->read_txn_pool);
+        wtree2_txn_abort(db->read_txn_pool);
         db->read_txn_pool = NULL;
     }
 
-    return wtree_txn_begin(db->wdb, true, error);
+    return wtree2_txn_begin(db->wdb, true, error);
 }
 
 /*
  * Get a read transaction, using pooling for better performance.
  *
  * Optimization: Instead of creating a new transaction each time,
- * we reuse a cached transaction via wtree_txn_renew() which only
+ * we reuse a cached transaction via wtree2_txn_renew() which only
  * acquires a new LMDB snapshot (much faster than full txn_begin).
  */
 MONGOLITE_HOT
-wtree_txn_t* _mongolite_get_read_txn(mongolite_db_t *db, gerror_t *error) {
+wtree2_txn_t* _mongolite_get_read_txn(mongolite_db_t *db, gerror_t *error) {
     if (MONGOLITE_UNLIKELY(!db)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Database is NULL");
         return NULL;
@@ -63,17 +63,19 @@ wtree_txn_t* _mongolite_get_read_txn(mongolite_db_t *db, gerror_t *error) {
 
     /* Try to reuse pooled read transaction */
     if (MONGOLITE_LIKELY(db->read_txn_pool != NULL)) {
-        int rc = wtree_txn_renew(db->read_txn_pool, error);
+        /* Get underlying wtree txn for renew */
+        wtree_txn_t *wtxn = wtree2_txn_get_wtree(db->read_txn_pool);
+        int rc = wtree_txn_renew(wtxn, error);
         if (MONGOLITE_LIKELY(rc == 0)) {
             return db->read_txn_pool;
         }
         /* Renew failed - abort and create new */
-        wtree_txn_abort(db->read_txn_pool);
+        wtree2_txn_abort(db->read_txn_pool);
         db->read_txn_pool = NULL;
     }
 
     /* Create new read transaction and cache it */
-    wtree_txn_t *txn = wtree_txn_begin(db->wdb, false, error);
+    wtree2_txn_t *txn = wtree2_txn_begin(db->wdb, false, error);
     if (MONGOLITE_LIKELY(txn != NULL)) {
         db->read_txn_pool = txn;
     }
@@ -85,7 +87,7 @@ wtree_txn_t* _mongolite_get_read_txn(mongolite_db_t *db, gerror_t *error) {
  * Uses reset instead of abort to keep the handle for reuse.
  */
 MONGOLITE_HOT
-void _mongolite_release_read_txn(mongolite_db_t *db, wtree_txn_t *txn) {
+void _mongolite_release_read_txn(mongolite_db_t *db, wtree2_txn_t *txn) {
     if (MONGOLITE_UNLIKELY(!db || !txn)) return;
 
     /* Don't touch explicit transactions */
@@ -93,27 +95,28 @@ void _mongolite_release_read_txn(mongolite_db_t *db, wtree_txn_t *txn) {
 
     /* If this is our pooled transaction, just reset it */
     if (MONGOLITE_LIKELY(txn == db->read_txn_pool)) {
-        wtree_txn_reset(txn);
+        wtree_txn_t *wtxn = wtree2_txn_get_wtree(txn);
+        wtree_txn_reset(wtxn);
     } else {
         /* Not our pooled txn (shouldn't happen normally) - just abort */
-        wtree_txn_abort(txn);
+        wtree2_txn_abort(txn);
     }
 }
 
-int _mongolite_commit_if_auto(mongolite_db_t *db, wtree_txn_t *txn, gerror_t *error) {
+int _mongolite_commit_if_auto(mongolite_db_t *db, wtree2_txn_t *txn, gerror_t *error) {
     if (MONGOLITE_UNLIKELY(!db || !txn)) return MONGOLITE_EINVAL;
     /* Only commit if not in explicit transaction */
     if (MONGOLITE_LIKELY(!db->in_transaction)) {
-        return wtree_txn_commit(txn, error);
+        return wtree2_txn_commit(txn, error);
     }
     return MONGOLITE_OK;
 }
 
-void _mongolite_abort_if_auto(mongolite_db_t *db, wtree_txn_t *txn) {
+void _mongolite_abort_if_auto(mongolite_db_t *db, wtree2_txn_t *txn) {
     if (MONGOLITE_UNLIKELY(!db || !txn)) return;
     /* Only abort if not in explicit transaction */
     if (MONGOLITE_LIKELY(!db->in_transaction)) {
-        wtree_txn_abort(txn);
+        wtree2_txn_abort(txn);
         /* Clear the pool reference if we just aborted the pooled txn */
         if (txn == db->read_txn_pool) {
             db->read_txn_pool = NULL;
@@ -124,11 +127,12 @@ void _mongolite_abort_if_auto(mongolite_db_t *db, wtree_txn_t *txn) {
 /* ============================================================
  * Doc Count Update (within transaction)
  *
- * This is the unified version - used by both insert and delete.
- * Updates doc_count atomically within an existing transaction.
+ * NOTE: With wtree2, doc_count is maintained internally by the tree.
+ * This function now just updates the schema for persistence.
+ * The cached count comes from wtree2_tree_count().
  * ============================================================ */
 
-int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
+int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree2_txn_t *txn,
                                      const char *collection, int64_t delta,
                                      gerror_t *error) {
     if (!db || !txn || !collection) {
@@ -136,17 +140,13 @@ int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
         return MONGOLITE_EINVAL;
     }
 
-    /*
-     * OPTIMIZATION: Update cached doc_count immediately.
-     * The cache is the source of truth for doc_count during runtime.
-     * Schema is updated for persistence.
-     */
-    _mongolite_tree_cache_update_doc_count(db, collection, delta);
+    /* Get underlying wtree txn for schema operations */
+    wtree_txn_t *wtxn = wtree2_txn_get_wtree(txn);
 
     /* Read schema entry using provided transaction */
     const void *value;
     size_t value_size;
-    int rc = wtree_get_txn(txn, db->schema_tree, collection, strlen(collection),
+    int rc = wtree_get_txn(wtxn, db->schema_tree, collection, strlen(collection),
                            &value, &value_size, error);
     if (rc != 0) {
         return rc;
@@ -165,12 +165,12 @@ int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
         return rc;
     }
 
-    /* Use cached count (source of truth) instead of entry.doc_count + delta */
-    int64_t cached_count = _mongolite_tree_cache_get_doc_count(db, collection);
-    if (cached_count >= 0) {
-        entry.doc_count = cached_count;
+    /* Get the current count from wtree2 (source of truth) */
+    wtree2_tree_t *tree = _mongolite_tree_cache_get(db, collection);
+    if (tree) {
+        entry.doc_count = wtree2_tree_count(tree);
     } else {
-        /* Fallback if not cached (shouldn't happen normally) */
+        /* Fallback if tree not cached */
         entry.doc_count += delta;
         if (entry.doc_count < 0) entry.doc_count = 0;
     }
@@ -184,7 +184,7 @@ int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
         return MONGOLITE_ENOMEM;
     }
 
-    rc = wtree_update_txn(txn, db->schema_tree,
+    rc = wtree_update_txn(wtxn, db->schema_tree,
                           entry.name, strlen(entry.name),
                           bson_get_data(new_doc), new_doc->len, error);
 
@@ -210,7 +210,7 @@ int mongolite_begin_transaction(mongolite_db_t *db) {
     }
 
     gerror_t local_error = {0};
-    db->current_txn = wtree_txn_begin(db->wdb, true, &local_error);
+    db->current_txn = wtree2_txn_begin(db->wdb, true, &local_error);
     if (!db->current_txn) {
         _mongolite_unlock(db);
         /* Note: error was set in local_error but we can't return it (no gerror param) */
@@ -234,7 +234,7 @@ int mongolite_commit(mongolite_db_t *db) {
     }
 
     gerror_t local_error = {0};
-    int rc = wtree_txn_commit(db->current_txn, &local_error);
+    int rc = wtree2_txn_commit(db->current_txn, &local_error);
 
     db->current_txn = NULL;
     db->in_transaction = false;
@@ -254,7 +254,7 @@ int mongolite_rollback(mongolite_db_t *db) {
         return MONGOLITE_ERROR;  /* Not in transaction */
     }
 
-    wtree_txn_abort(db->current_txn);
+    wtree2_txn_abort(db->current_txn);
 
     db->current_txn = NULL;
     db->in_transaction = false;
@@ -272,5 +272,5 @@ int mongolite_sync(mongolite_db_t *db, bool force, gerror_t *error) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Database is NULL");
         return MONGOLITE_EINVAL;
     }
-    return wtree_db_sync(db->wdb, force, error);
+    return wtree2_db_sync(db->wdb, force, error);
 }

@@ -3,6 +3,7 @@
 
 #include "mongolite.h"
 #include "wtree.h"
+#include "wtree2.h"
 #include <bson/bson.h>
 #include "mongolite_helpers.h"
 
@@ -75,35 +76,49 @@ extern "C" {
 /* Check if error code is from mongolite range */
 #define MONGOLITE_IS_ERROR(code) ((code) <= -1000 && (code) >= -1999)
 
+/* Translate wtree2 error codes to mongolite error codes */
+static inline int _mongolite_translate_wtree2_error(int wtree2_rc) {
+    switch (wtree2_rc) {
+        case WTREE2_OK:        return MONGOLITE_OK;
+        case WTREE2_ENOTFOUND: return MONGOLITE_ENOTFOUND;
+        case WTREE2_EEXISTS:   return MONGOLITE_EEXISTS;
+        case WTREE2_EINVAL:    return MONGOLITE_EINVAL;
+        case WTREE2_ENOMEM:    return MONGOLITE_ENOMEM;
+        case WTREE2_EINDEX:    return MONGOLITE_EINDEX;
+        case WTREE2_MAP_FULL:  return WTREE_MAP_FULL;  /* Pass through for resize */
+        default:               return MONGOLITE_ERROR;
+    }
+}
+
 /* ============================================================
  * Internal Structures
  * ============================================================ */
 
 /*
- * Cached index info for a collection (avoids schema reads on every CRUD)
+ * Cached index info for a collection (used for query optimization)
+ * Note: Index trees are now managed internally by wtree2
  */
 typedef struct mongolite_cached_index {
     char *name;                 /* Index name (e.g., "email_1") */
     bson_t *keys;               /* Index key spec (e.g., {"email": 1}) */
-    wtree_tree_t *tree;         /* Open index tree handle */
     bool unique;
     bool sparse;
 } mongolite_cached_index_t;
 
 /*
- * Cached tree handle (for open collection/index trees)
+ * Cached tree handle (for open collection trees)
+ * Note: Index trees are now managed internally by wtree2
  */
 typedef struct mongolite_tree_cache_entry {
     bson_oid_t oid;             /* Tree's unique identifier */
-    char *name;                 /* Collection/index name */
-    char *tree_name;            /* Full LMDB tree name (col:xxx or idx:xxx) */
-    wtree_tree_t *tree;         /* Open tree handle */
-    int64_t doc_count;          /* Cached document count (avoids schema reads) */
+    char *name;                 /* Collection name */
+    char *tree_name;            /* Full LMDB tree name (col:xxx) */
+    wtree2_tree_t *tree;        /* Open tree handle (wtree2 - manages indexes) */
 
-    /* Cached indexes for this collection (Phase 3 optimization) */
-    mongolite_cached_index_t *indexes;  /* Array of cached indexes */
+    /* Cached index specs for query optimization (not tree handles) */
+    mongolite_cached_index_t *indexes;  /* Array of cached index specs */
     size_t index_count;                 /* Number of indexes (excluding _id) */
-    bool indexes_loaded;                /* true if indexes have been loaded */
+    bool indexes_loaded;                /* true if index specs have been loaded */
 
     struct mongolite_tree_cache_entry *next;
 } mongolite_tree_cache_entry_t;
@@ -112,9 +127,9 @@ typedef struct mongolite_tree_cache_entry {
  * Main database handle
  */
 struct mongolite_db {
-    /* LMDB backend */
-    wtree_db_t *wdb;                    /* LMDB environment */
-    wtree_tree_t *schema_tree;          /* _mongolite_schema tree */
+    /* LMDB backend (wtree2 for index-aware operations) */
+    wtree2_db_t *wdb;                   /* LMDB environment (wtree2) */
+    wtree_tree_t *schema_tree;          /* _mongolite_schema tree (plain wtree) */
 
     /* Configuration (copied from open) */
     char *path;                         /* Database directory path */
@@ -126,10 +141,10 @@ struct mongolite_db {
     int64_t last_insert_rowid;          /* Last generated _id as int64 */
     int changes;                        /* Docs affected by last operation */
     bool in_transaction;                /* Explicit transaction active */
-    wtree_txn_t *current_txn;           /* Current explicit transaction */
+    wtree2_txn_t *current_txn;          /* Current explicit transaction (wtree2) */
 
     /* Read transaction pool (optimization: reuse via reset/renew) */
-    wtree_txn_t *read_txn_pool;         /* Cached read transaction */
+    wtree2_txn_t *read_txn_pool;        /* Cached read transaction (wtree2) */
 
     /* Tree cache (simple linked list for now) */
     mongolite_tree_cache_entry_t *tree_cache;
@@ -154,8 +169,8 @@ struct mongolite_cursor {
     char *collection_name;
 
     /* Iteration state */
-    wtree_txn_t *txn;                   /* Read transaction */
-    wtree_iterator_t *iter;             /* Tree iterator */
+    wtree2_txn_t *txn;                  /* Read transaction (wtree2) */
+    wtree2_iterator_t *iter;            /* Tree iterator (wtree2) */
     bool owns_txn;                      /* Did we create the transaction? */
 
     /* Query */
@@ -226,18 +241,14 @@ int _mongolite_schema_entry_from_bson(const bson_t *doc,
  * Internal Tree Cache Operations
  * ============================================================ */
 
-wtree_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name);
+wtree2_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name);
 int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
                               const char *tree_name, const bson_oid_t *oid,
-                              wtree_tree_t *tree, int64_t doc_count);
+                              wtree2_tree_t *tree);
 void _mongolite_tree_cache_remove(mongolite_db_t *db, const char *name);
 void _mongolite_tree_cache_clear(mongolite_db_t *db);
 
-/* Doc count cache operations */
-int64_t _mongolite_tree_cache_get_doc_count(mongolite_db_t *db, const char *name);
-void _mongolite_tree_cache_update_doc_count(mongolite_db_t *db, const char *name, int64_t delta);
-
-/* Index cache operations (Phase 3 optimization) */
+/* Index specs cache operations (for query optimization) */
 mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
                                                          const char *collection,
                                                          size_t *out_count,
@@ -267,15 +278,15 @@ void _mongolite_unlock(mongolite_db_t *db);
 /* Platform helpers */
 char* _mongolite_strndup(const char *s, size_t n);
 
-/* Transaction helpers */
-wtree_txn_t* _mongolite_get_write_txn(mongolite_db_t *db, gerror_t *error);
-wtree_txn_t* _mongolite_get_read_txn(mongolite_db_t *db, gerror_t *error);
-void _mongolite_release_read_txn(mongolite_db_t *db, wtree_txn_t *txn);
-int _mongolite_commit_if_auto(mongolite_db_t *db, wtree_txn_t *txn, gerror_t *error);
-void _mongolite_abort_if_auto(mongolite_db_t *db, wtree_txn_t *txn);
+/* Transaction helpers (wtree2) */
+wtree2_txn_t* _mongolite_get_write_txn(mongolite_db_t *db, gerror_t *error);
+wtree2_txn_t* _mongolite_get_read_txn(mongolite_db_t *db, gerror_t *error);
+void _mongolite_release_read_txn(mongolite_db_t *db, wtree2_txn_t *txn);
+int _mongolite_commit_if_auto(mongolite_db_t *db, wtree2_txn_t *txn, gerror_t *error);
+void _mongolite_abort_if_auto(mongolite_db_t *db, wtree2_txn_t *txn);
 
-/* Doc count update (within existing transaction) */
-int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree_txn_t *txn,
+/* Doc count update (within existing transaction) - may be removed when fully migrated */
+int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree2_txn_t *txn,
                                      const char *collection, int64_t delta,
                                      gerror_t *error);
 
@@ -284,7 +295,7 @@ int _mongolite_try_resize(mongolite_db_t *db, gerror_t *error);
 
 /* Query optimization helpers */
 bool _mongolite_is_id_query(const bson_t *filter, bson_oid_t *out_oid);
-bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree_tree_t *tree,
+bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree2_tree_t *tree,
                                const bson_oid_t *oid, gerror_t *error);
 
 /* ============================================================
@@ -352,39 +363,17 @@ mongolite_cached_index_t* _find_best_index(mongolite_db_t *db, const char *colle
 
 /* Use index to find documents matching a simple equality query */
 bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
-                              wtree_tree_t *col_tree,
+                              wtree2_tree_t *col_tree,
                               mongolite_cached_index_t *index,
                               const bson_t *filter, gerror_t *error);
-
-/* ============================================================
- * Internal Index Maintenance (Phase 3)
- * ============================================================ */
-
-/* Maintain indexes after document insert (call within transaction) */
-int _mongolite_index_insert(mongolite_db_t *db, wtree_txn_t *txn,
-                             const char *collection, const bson_t *doc,
-                             gerror_t *error);
-
-/* Maintain indexes after document delete (call within transaction) */
-int _mongolite_index_delete(mongolite_db_t *db, wtree_txn_t *txn,
-                             const char *collection, const bson_t *doc,
-                             gerror_t *error);
-
-/* Maintain indexes after document update (call within transaction)
- * old_doc: the document before update
- * new_doc: the document after update */
-int _mongolite_index_update(mongolite_db_t *db, wtree_txn_t *txn,
-                             const char *collection,
-                             const bson_t *old_doc, const bson_t *new_doc,
-                             gerror_t *error);
 
 /* ============================================================
  * Internal Collection Operations
  * ============================================================ */
 
 /* Get or open a collection's tree handle (uses cache) */
-wtree_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *name,
-                                              gerror_t *error);
+wtree2_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *name,
+                                               gerror_t *error);
 
 /* ============================================================
  * Internal Cursor Operations
@@ -397,9 +386,9 @@ wtree_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *nam
  *            The cursor will NOT own the transaction (owns_txn = false).
  */
 mongolite_cursor_t* _mongolite_cursor_create_with_txn(mongolite_db_t *db,
-                                                       wtree_tree_t *tree,
+                                                       wtree2_tree_t *tree,
                                                        const char *collection,
-                                                       wtree_txn_t *txn,
+                                                       wtree2_txn_t *txn,
                                                        const bson_t *filter,
                                                        gerror_t *error);
 

@@ -127,6 +127,7 @@ set(MONGOLITE_SOURCES_NO_WTREE
     ${SRC_DIR}/mongolite_util.c
     ${SRC_DIR}/bson_update.c
     ${SRC_DIR}/key_compare.c
+    ${SRC_DIR}/wtree2.c
     ${SRC_DIR}/gerror.c
 )
 
@@ -217,3 +218,4 @@ add_custom_target(run-tests
     DEPENDS ${ALL_TEST_TARGETS}
     COMMENT "Running all tests..."
 )
+

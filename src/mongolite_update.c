@@ -35,7 +35,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
     if (MONGOLITE_LIKELY(_mongolite_is_id_query(filter, &oid))) {
         /* Fast path: direct _id lookup */
         _mongolite_lock(db);
-        wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+        wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
         if (MONGOLITE_LIKELY(tree)) {
             existing = _mongolite_find_by_id(db, tree, &oid, error);
         }
@@ -111,8 +111,8 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
     /* Lock database */
     _mongolite_lock(db);
 
-    /* Get collection tree */
-    wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree2 - indexes maintained automatically) */
+    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (MONGOLITE_UNLIKELY(!tree)) {
         bson_destroy(existing);
         bson_destroy(updated);
@@ -120,12 +120,8 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Pre-load index cache before starting transaction (avoids read txn inside write txn) */
-    size_t index_count = 0;
-    (void)_mongolite_get_cached_indexes(db, collection, &index_count, error);
-
     /* Begin transaction */
-    wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
+    wtree2_txn_t *txn = _mongolite_get_write_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) {
         bson_destroy(existing);
         bson_destroy(updated);
@@ -133,28 +129,18 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Maintain secondary indexes */
-    int rc = _mongolite_index_update(db, txn, collection, existing, updated, error);
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        _mongolite_abort_if_auto(db, txn);
-        bson_destroy(existing);
-        bson_destroy(updated);
-        _mongolite_unlock(db);
-        return rc;
-    }
-
     bson_destroy(existing);
 
-    /* Update document (overwrites existing) */
-    rc = wtree_update_txn(txn, tree,
-                          doc_id.bytes, sizeof(doc_id.bytes),
-                          bson_get_data(updated), updated->len,
-                          error);
+    /* Update document via wtree2 (indexes maintained automatically) */
+    int rc = wtree2_update_txn(txn, tree,
+                                doc_id.bytes, sizeof(doc_id.bytes),
+                                bson_get_data(updated), updated->len,
+                                error);
     if (MONGOLITE_UNLIKELY(rc != 0)) {
         _mongolite_abort_if_auto(db, txn);
         bson_destroy(updated);
         _mongolite_unlock(db);
-        return -1;
+        return _mongolite_translate_wtree2_error(rc);
     }
 
     rc = _mongolite_commit_if_auto(db, txn, error);
@@ -194,19 +180,15 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
     /* Lock database */
     _mongolite_lock(db);
 
-    /* Get collection tree */
-    wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree2) */
+    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         return -1;
     }
 
-    /* Pre-load index cache before starting transaction (avoids read txn inside write txn) */
-    size_t index_count = 0;
-    (void)_mongolite_get_cached_indexes(db, collection, &index_count, error);
-
     /* Begin transaction */
-    wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
+    wtree2_txn_t *txn = _mongolite_get_write_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) {
         _mongolite_unlock(db);
         return -1;
@@ -291,25 +273,13 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
     int64_t count = 0;
 
     for (size_t i = 0; i < n_updates; i++) {
-        /* Maintain secondary indexes */
-        rc = _mongolite_index_update(db, txn, collection, updates[i].old_doc, updates[i].new_doc, error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            for (size_t j = 0; j < n_updates; j++) {
-                bson_destroy(updates[j].old_doc);
-                bson_destroy(updates[j].new_doc);
-            }
-            free(updates);
-            _mongolite_abort_if_auto(db, txn);
-            _mongolite_unlock(db);
-            return rc;
-        }
-
-        /* Update document */
-        rc = wtree_update_txn(txn, tree,
+        /* Update document via wtree2 (indexes maintained automatically) */
+        rc = wtree2_update_txn(txn, tree,
                               updates[i].id.bytes, sizeof(updates[i].id.bytes),
                               bson_get_data(updates[i].new_doc), updates[i].new_doc->len,
                               error);
         if (MONGOLITE_UNLIKELY(rc != 0)) {
+            int translated_rc = _mongolite_translate_wtree2_error(rc);
             for (size_t j = 0; j < n_updates; j++) {
                 bson_destroy(updates[j].old_doc);
                 bson_destroy(updates[j].new_doc);
@@ -317,7 +287,7 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
             free(updates);
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
-            return -1;
+            return translated_rc;
         }
 
         count++;
@@ -378,20 +348,11 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
             bson_oid_init(&new_oid, NULL);
         }
 
-        /* Insert into collection (within existing transaction) */
-        rc = wtree_insert_one_txn(txn, tree,
-                                   new_oid.bytes, sizeof(new_oid.bytes),
-                                   bson_get_data(new_doc), new_doc->len,
-                                   error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            bson_destroy(new_doc);
-            _mongolite_abort_if_auto(db, txn);
-            _mongolite_unlock(db);
-            return rc;
-        }
-
-        /* Maintain secondary indexes */
-        rc = _mongolite_index_insert(db, txn, collection, new_doc, error);
+        /* Insert into collection via wtree2 (indexes maintained automatically) */
+        rc = wtree2_insert_one_txn(txn, tree,
+                                    new_oid.bytes, sizeof(new_oid.bytes),
+                                    bson_get_data(new_doc), new_doc->len,
+                                    error);
         if (MONGOLITE_UNLIKELY(rc != 0)) {
             bson_destroy(new_doc);
             _mongolite_abort_if_auto(db, txn);
@@ -546,8 +507,8 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
     /* Lock database */
     _mongolite_lock(db);
 
-    /* Get collection tree */
-    wtree_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree2 - indexes maintained automatically) */
+    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (MONGOLITE_UNLIKELY(!tree)) {
         bson_destroy(existing);
         bson_destroy(new_doc);
@@ -555,12 +516,8 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Pre-load index cache before starting transaction (avoids read txn inside write txn) */
-    size_t index_count = 0;
-    (void)_mongolite_get_cached_indexes(db, collection, &index_count, error);
-
     /* Begin transaction */
-    wtree_txn_t *txn = _mongolite_get_write_txn(db, error);
+    wtree2_txn_t *txn = _mongolite_get_write_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) {
         bson_destroy(existing);
         bson_destroy(new_doc);
@@ -568,20 +525,10 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Maintain secondary indexes */
-    int rc = _mongolite_index_update(db, txn, collection, existing, new_doc, error);
-    if (MONGOLITE_UNLIKELY(rc != 0)) {
-        _mongolite_abort_if_auto(db, txn);
-        bson_destroy(existing);
-        bson_destroy(new_doc);
-        _mongolite_unlock(db);
-        return rc;
-    }
-
     bson_destroy(existing);
 
-    /* Replace document */
-    rc = wtree_update_txn(txn, tree,
+    /* Replace document via wtree2 (indexes maintained automatically) */
+    int rc = wtree2_update_txn(txn, tree,
                           doc_id.bytes, sizeof(doc_id.bytes),
                           bson_get_data(new_doc), new_doc->len,
                           error);
@@ -589,7 +536,7 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
         _mongolite_abort_if_auto(db, txn);
         bson_destroy(new_doc);
         _mongolite_unlock(db);
-        return -1;
+        return _mongolite_translate_wtree2_error(rc);
     }
 
     rc = _mongolite_commit_if_auto(db, txn, error);

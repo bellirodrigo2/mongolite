@@ -14,6 +14,7 @@ extern "C" {
 #define WTREE_MAP_FULL      1001  // Database map is full, needs resizing
 #define WTREE_TXN_FULL      1002  // Transaction is full
 #define WTREE_KEY_NOT_FOUND 1003  // Key not found (not necessarily an error)
+#define WTREE_KEY_EXISTS    1004  // Key already exists (duplicate key)
 
 // Database handle
 typedef struct wtree_db_t wtree_db_t;
@@ -208,6 +209,9 @@ int wtree_iterator_delete(wtree_iterator_t *iter, gerror_t *error);
 
 // Close iterator
 void wtree_iterator_close(wtree_iterator_t *iter);
+
+// Get iterator's transaction
+wtree_txn_t* wtree_iterator_get_txn(wtree_iterator_t *iter);
 
 // ============= Utility Functions =============
 
