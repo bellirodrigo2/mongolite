@@ -15,6 +15,13 @@
 
 #define MONGOLITE_LIB "mongolite"
 
+/* Cleanup callback for bson_t* stored as user_data in wtree3 indexes */
+static void bson_user_data_cleanup(void *user_data) {
+    if (user_data) {
+        bson_destroy((bson_t*)user_data);
+    }
+}
+
 /* ============================================================
  * Collection Create
  * ============================================================ */
@@ -49,8 +56,8 @@ int mongolite_collection_create(mongolite_db_t *db, const char *name,
         return MONGOLITE_ENOMEM;
     }
 
-    /* Create the wtree2 tree for this collection (with index support) */
-    wtree2_tree_t *tree = wtree2_tree_create(db->wdb, tree_name, 0, 0, error);
+    /* Create the wtree3 tree for this collection (with index support) */
+    wtree3_tree_t *tree = wtree3_tree_open(db->wdb, tree_name, 0, 0, error);
     if (!tree) {
         free(tree_name);
         _mongolite_unlock(db);
@@ -99,8 +106,8 @@ int mongolite_collection_create(mongolite_db_t *db, const char *name,
     rc = _mongolite_schema_put(db, &entry, error);
     if (rc != 0) {
         /* Delete the tree to avoid orphaned DBI - close handle first, then delete */
-        wtree2_tree_close(tree);
-        wtree2_tree_delete(db->wdb, entry.tree_name, NULL);
+        wtree3_tree_close(tree);
+        wtree3_tree_delete(db->wdb, entry.tree_name, NULL);
         _mongolite_schema_entry_free(&entry);
         _mongolite_unlock(db);
         return rc;
@@ -148,15 +155,15 @@ int mongolite_collection_drop(mongolite_db_t *db, const char *name, gerror_t *er
     /* Remove from tree cache first (also invalidates index cache) */
     _mongolite_tree_cache_remove(db, name);
 
-    /* Delete the wtree2 tree (this also deletes its internal index trees) */
-    rc = wtree2_tree_delete(db->wdb, entry.tree_name, error);
-    if (rc != 0 && rc != WTREE2_ENOTFOUND) {
+    /* Delete the wtree3 tree (this also deletes its internal index trees) */
+    rc = wtree3_tree_delete(db->wdb, entry.tree_name, error);
+    if (rc != 0 && rc != WTREE3_NOT_FOUND) {
         _mongolite_schema_entry_free(&entry);
         _mongolite_unlock(db);
         return rc;
     }
 
-    /* Note: wtree2 now manages index trees internally.
+    /* Note: wtree3 now manages index trees internally.
      * We still clean up the old-style index trees for backward compatibility */
     if (entry.indexes) {
         bson_iter_t iter;
@@ -172,9 +179,8 @@ int mongolite_collection_drop(mongolite_db_t *db, const char *name, gerror_t *er
                         if (strcmp(index_name, "_id_") != 0) {
                             char *index_tree_name = _mongolite_index_tree_name(name, index_name);
                             if (index_tree_name) {
-                                /* Try to delete any old-style index trees */
-                                wtree_db_t *wdb = wtree2_db_get_wtree(db->wdb);
-                                wtree_tree_delete(wdb, index_tree_name, NULL);
+                                /* Try to delete any index trees */
+                                wtree3_tree_delete(db->wdb, index_tree_name, NULL);
                                 free(index_tree_name);
                             }
                         }
@@ -262,12 +268,12 @@ int64_t mongolite_collection_count(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* If no filter, return count from wtree2 (fast path) */
+    /* If no filter, return count from wtree3 (fast path) */
     if (!filter || bson_empty(filter)) {
-        /* Get tree and return wtree2's count */
-        wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+        /* Get tree and return wtree3's count */
+        wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
         if (tree) {
-            return wtree2_tree_count(tree);
+            return wtree3_tree_count(tree);
         }
         /* Fallback to schema if tree not accessible */
         mongolite_schema_entry_t entry = {0};
@@ -356,13 +362,13 @@ int mongolite_collection_set_metadata(mongolite_db_t *db, const char *collection
 }
 
 /* ============================================================
- * Internal: Load indexes from schema into wtree2 tree
+ * Internal: Load indexes from schema into wtree3 tree
  *
  * Called when opening a tree from cache miss to register all
- * existing indexes with wtree2 for automatic maintenance.
+ * existing indexes with wtree3 for automatic maintenance.
  * ============================================================ */
 
-static int _load_indexes_from_schema(wtree2_tree_t *tree, const bson_t *indexes,
+static int _load_indexes_from_schema(wtree3_tree_t *tree, const bson_t *indexes,
                                       gerror_t *error) {
     if (!indexes || bson_empty(indexes)) {
         return MONGOLITE_OK;  /* No indexes to load */
@@ -403,7 +409,7 @@ static int _load_indexes_from_schema(wtree2_tree_t *tree, const bson_t *indexes,
             continue;
         }
 
-        /* Copy keys for use as user_data (wtree2 stores this reference) */
+        /* Copy keys for use as user_data (wtree3 stores this reference) */
         bson_t *keys_copy = bson_copy(idx_keys);
         bson_destroy(idx_keys);
         if (!keys_copy) {
@@ -411,27 +417,28 @@ static int _load_indexes_from_schema(wtree2_tree_t *tree, const bson_t *indexes,
             continue;
         }
 
-        /* Configure index for wtree2 */
-        wtree2_index_config_t wtree2_config = {
+        /* Configure index for wtree3 */
+        wtree3_index_config_t wtree3_config = {
             .name = idx_name,
             .key_fn = idx_config.sparse ? bson_index_key_extractor_sparse : bson_index_key_extractor,
             .user_data = keys_copy,
+            .user_data_cleanup = bson_user_data_cleanup,
             .unique = idx_config.unique,
             .sparse = idx_config.sparse,
             .compare = _mongolite_index_compare
         };
 
-        /* Register index with wtree2 (no population - data already exists) */
-        rc = wtree2_tree_add_index(tree, &wtree2_config, error);
+        /* Register index with wtree3 (no population - data already exists) */
+        rc = wtree3_tree_add_index(tree, &wtree3_config, error);
 
         free(idx_name);
 
-        if (rc != WTREE2_OK && rc != WTREE2_EEXISTS) {
+        if (rc != WTREE3_OK && rc != WTREE3_KEY_EXISTS) {
             /* Index registration failed - free the keys copy we made */
             bson_destroy(keys_copy);
             /* Continue trying other indexes - log error but don't fail */
         }
-        /* Note: keys_copy ownership transferred to wtree2 on success */
+        /* Note: keys_copy ownership transferred to wtree3 on success */
     }
 
     return MONGOLITE_OK;
@@ -441,7 +448,7 @@ static int _load_indexes_from_schema(wtree2_tree_t *tree, const bson_t *indexes,
  * Internal: Get or Open Collection Tree
  * ============================================================ */
 
-wtree2_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *name,
+wtree3_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *name,
                                                gerror_t *error) {
     if (!db || !name) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
@@ -449,7 +456,7 @@ wtree2_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *na
     }
 
     /* Check cache first */
-    wtree2_tree_t *tree = _mongolite_tree_cache_get(db, name);
+    wtree3_tree_t *tree = _mongolite_tree_cache_get(db, name);
     if (tree) {
         return tree;
     }
@@ -461,14 +468,14 @@ wtree2_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *na
         return NULL;
     }
 
-    /* Open the tree with wtree2 (index-aware), using doc_count from schema */
-    tree = wtree2_tree_create(db->wdb, entry.tree_name, 0, entry.doc_count, error);
+    /* Open the tree with wtree3 (index-aware), using doc_count from schema */
+    tree = wtree3_tree_open(db->wdb, entry.tree_name, 0, entry.doc_count, error);
     if (!tree) {
         _mongolite_schema_entry_free(&entry);
         return NULL;
     }
 
-    /* Load indexes from schema into wtree2 for automatic maintenance */
+    /* Load indexes from schema into wtree3 for automatic maintenance */
     rc = _load_indexes_from_schema(tree, entry.indexes, error);
     if (rc != MONGOLITE_OK) {
         /* Index loading failed - but tree is still usable */

@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <bson/bson.h>
+#include <lmdb.h>
 
 #include "mongolite.h"
 #include "mongolite_internal.h"
@@ -94,34 +95,31 @@ static int count_index_entries(const char *collection, const char *index_name) {
     snprintf(tree_name, len, "idx:%s:%s", col_tree, index_name);
     free(col_tree);
 
-    /* Get underlying wtree_db from wtree2_db */
-    wtree_db_t *wdb = wtree2_db_get_wtree(g_db->wdb);
-
-    /* Must use MDB_DUPSORT to properly iterate all key+value pairs */
-    wtree_tree_t *tree = wtree_tree_create(wdb, tree_name, MDB_DUPSORT, NULL);
+    /* Open the index tree using wtree3 API (MDB_DUPSORT for index trees) */
+    wtree3_tree_t *tree = wtree3_tree_open(g_db->wdb, tree_name, MDB_DUPSORT, -1, NULL);
     free(tree_name);
     if (!tree) return -1;
 
     /* Create a dedicated read transaction */
-    wtree_txn_t *txn = wtree_txn_begin(wdb, false, NULL);
+    wtree3_txn_t *txn = wtree3_txn_begin(g_db->wdb, false, NULL);
     if (!txn) {
-        wtree_tree_close(tree);
+        wtree3_tree_close(tree);
         return -1;
     }
 
     int count = 0;
-    wtree_iterator_t *iter = wtree_iterator_create_with_txn(tree, txn, NULL);
+    wtree3_iterator_t *iter = wtree3_iterator_create_with_txn(tree, txn, NULL);
     if (iter) {
-        if (wtree_iterator_first(iter)) {
+        if (wtree3_iterator_first(iter)) {
             do {
                 count++;
-            } while (wtree_iterator_next(iter));
+            } while (wtree3_iterator_next(iter));
         }
-        wtree_iterator_close(iter);
+        wtree3_iterator_close(iter);
     }
 
-    wtree_txn_abort(txn);
-    wtree_tree_close(tree);
+    wtree3_txn_abort(txn);
+    wtree3_tree_close(tree);
     return count;
 }
 

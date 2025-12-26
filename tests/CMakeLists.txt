@@ -47,17 +47,12 @@ endmacro()
 # gerror test - only needs gerror.c
 add_mongolite_test(test_gerror ${SRC_DIR}/gerror.c)
 
-# wtree tests - needs wtree + gerror
-add_mongolite_test(test_wtree ${WTREE_SOURCES} ${SRC_DIR}/gerror.c)
-add_mongolite_test(test_wtree_iter ${WTREE_SOURCES} ${SRC_DIR}/gerror.c)
-
-# wtree2 test - needs wtree + wtree2 + gerror
-add_mongolite_test(test_wtree2
-    ${WTREE_SOURCES}
-    ${SRC_DIR}/wtree2.c
+# wtree3 test - unified storage layer
+add_mongolite_test(test_wtree3
+    ${WTREE3_SOURCES}
     ${SRC_DIR}/gerror.c
 )
-target_include_directories(test_wtree2 PRIVATE ${TEST_INCLUDE_DIRS})
+target_include_directories(test_wtree3 PRIVATE ${TEST_INCLUDE_DIRS})
 
 # key_compare test - needs libbson
 add_mongolite_test(test_key_compare ${SRC_DIR}/key_compare.c)
@@ -105,61 +100,6 @@ add_dependencies(test_mongolite_index mongolite)
 target_link_libraries(test_mongolite_index PRIVATE mongolite)
 
 # ============================================================
-# Mock wtree infrastructure for unit testing
-# ============================================================
-
-set(MOCK_WTREE_SOURCES
-    ${TEST_DIR}/mock_wtree.c
-)
-
-# Mongolite sources (excluding wtree.c - we mock it)
-set(MONGOLITE_SOURCES_NO_WTREE
-    ${SRC_DIR}/mongolite_db.c
-    ${SRC_DIR}/mongolite_collection.c
-    ${SRC_DIR}/mongolite_schema.c
-    ${SRC_DIR}/mongolite_cursor.c
-    ${SRC_DIR}/mongolite_txn.c
-    ${SRC_DIR}/mongolite_insert.c
-    ${SRC_DIR}/mongolite_find.c
-    ${SRC_DIR}/mongolite_update.c
-    ${SRC_DIR}/mongolite_delete.c
-    ${SRC_DIR}/mongolite_index.c
-    ${SRC_DIR}/mongolite_util.c
-    ${SRC_DIR}/bson_update.c
-    ${SRC_DIR}/key_compare.c
-    ${SRC_DIR}/wtree2.c
-    ${SRC_DIR}/gerror.c
-)
-
-# Macro for mocked unit tests
-macro(add_mocked_unit_test NAME)
-    add_executable(${NAME}
-        ${TEST_DIR}/${NAME}.c
-        ${MOCK_WTREE_SOURCES}
-        ${MONGOLITE_SOURCES_NO_WTREE}
-        ${ARGN}
-    )
-    set_target_properties(${NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${BIN_DIR})
-    target_link_libraries(${NAME} PRIVATE cmocka bsonmatch m pthread)
-    target_include_directories(${NAME} PRIVATE
-        ${cmocka_SOURCE_DIR}/include
-        ${TEST_INCLUDE_DIRS}
-        ${TEST_DIR}
-    )
-    add_dependencies(${NAME} libbson bsonmatch)
-    target_link_libraries(${NAME} PRIVATE ${LOCAL_LIBBSON_LIB} ${SYSTEM_NETWORK_LIBS})
-    add_test(NAME ${NAME} COMMAND ${NAME})
-endmacro()
-
-# ============================================================
-# Mocked unit tests
-# ============================================================
-
-add_mocked_unit_test(test_mongolite_txn_mocked)
-add_mocked_unit_test(test_mongolite_cursor_mocked)
-add_mocked_unit_test(test_mongolite_insert_mocked)
-
-# ============================================================
 # Mongolite integration tests (full library)
 # ============================================================
 
@@ -188,17 +128,12 @@ add_mongolite_integration_test(test_stress)
 
 set(ALL_TEST_TARGETS
     test_gerror
-    test_wtree
-    test_wtree_iter
-    test_wtree2
+    test_wtree3
     test_key_compare
     test_bsonmatch
     test_bson_update
     test_helpers
     test_mongolite_index
-    test_mongolite_txn_mocked
-    test_mongolite_cursor_mocked
-    test_mongolite_insert_mocked
     test_mongolite_db
     test_mongolite_collection
     test_mongolite_insert

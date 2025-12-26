@@ -453,7 +453,7 @@ bson_t* bson_extract_index_key(const bson_t *doc, const bson_t *keys) {
 /* ============================================================
  * 9) WTREE2 INDEX KEY EXTRACTION CALLBACK
  *
- *    This is the callback for wtree2 index support.
+ *    This is the callback for wtree3 index support.
  *    user_data = bson_t* containing the index key spec (e.g., {"email": 1})
  * ============================================================ */
 

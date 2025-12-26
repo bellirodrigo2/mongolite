@@ -320,7 +320,7 @@ static inline void cleanup_bson_array(bson_t **arr, size_t count) {
  */
 typedef struct {
     mongolite_db_t *db;
-    void *txn;              /* wtree_txn_t* - void* to avoid include dependency */
+    void *txn;              /* wtree3_txn_t* - void* to avoid include dependency */
     bson_t *doc1;           /* First document to cleanup */
     bson_t *doc2;           /* Second document to cleanup */
     void *array;            /* Array to free */

@@ -9,7 +9,6 @@
  */
 
 #include "mongolite_internal.h"
-#include "wtree2.h"
 #include "key_compare.h"
 #include "macros.h"
 #include <stdlib.h>
@@ -17,6 +16,13 @@
 #include <stdio.h>
 
 #define MONGOLITE_LIB "mongolite"
+
+/* Cleanup callback for bson_t* stored as user_data in wtree3 indexes */
+static void bson_user_data_cleanup(void *user_data) {
+    if (user_data) {
+        bson_destroy((bson_t*)user_data);
+    }
+}
 
 /* ============================================================
  * Index Name Generation
@@ -499,12 +505,12 @@ static bson_t* _remove_index_from_array(const bson_t *existing, const char *name
 /*
  * mongolite_create_index - Create an index on a collection
  *
- * Uses wtree2's built-in index management:
+ * Uses wtree3's built-in index management:
  * 1. Validate parameters
  * 2. Generate index name if not provided
  * 3. Check collection exists and index doesn't exist
- * 4. Register index with wtree2_tree_add_index
- * 5. Populate from existing documents with wtree2_tree_populate_index
+ * 4. Register index with wtree3_tree_add_index
+ * 5. Populate from existing documents with wtree3_tree_populate_index
  * 6. Update collection schema with new index
  */
 int mongolite_create_index(mongolite_db_t *db, const char *collection,
@@ -566,15 +572,15 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
         goto cleanup;
     }
 
-    /* Get collection tree (wtree2) */
-    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree3) */
+    wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
         rc = MONGOLITE_ERROR;
         _mongolite_schema_entry_free(&col_entry);
         goto cleanup;
     }
 
-    /* Copy keys for use as user_data in callback (wtree2 stores this) */
+    /* Copy keys for use as user_data in callback (wtree3 stores this) */
     keys_copy = bson_copy(keys);
     if (!keys_copy) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
@@ -584,48 +590,47 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
         goto cleanup;
     }
 
-    /* Configure index for wtree2 */
+    /* Configure index for wtree3 */
     bool is_unique = config && config->unique;
     bool is_sparse = config && config->sparse;
 
-    wtree2_index_config_t idx_config = {
+    wtree3_index_config_t idx_config = {
         .name = index_name,
         .key_fn = is_sparse ? bson_index_key_extractor_sparse : bson_index_key_extractor,
         .user_data = keys_copy,
+        .user_data_cleanup = bson_user_data_cleanup,
         .unique = is_unique,
         .sparse = is_sparse,
         .compare = _mongolite_index_compare
     };
 
-    /* Register index with wtree2 */
-    rc = wtree2_tree_add_index(tree, &idx_config, error);
+    /* Register index with wtree3 */
+    rc = wtree3_tree_add_index(tree, &idx_config, error);
     if (rc != 0) {
         bson_destroy(keys_copy);
         keys_copy = NULL;
         _mongolite_schema_entry_free(&col_entry);
-        rc = _mongolite_translate_wtree2_error(rc);
+        rc = _mongolite_translate_wtree3_error(rc);
         goto cleanup;
     }
 
     /* Populate index from existing documents */
-    rc = wtree2_tree_populate_index(tree, index_name, error);
+    rc = wtree3_tree_populate_index(tree, index_name, error);
     if (rc != 0) {
-        /* Drop the partially created index */
-        wtree2_tree_drop_index(tree, index_name, NULL);
-        bson_destroy(keys_copy);
-        keys_copy = NULL;
+        /* Drop the partially created index (cleanup callback frees keys_copy) */
+        wtree3_tree_drop_index(tree, index_name, NULL);
+        keys_copy = NULL;  /* Already freed by cleanup callback */
         _mongolite_schema_entry_free(&col_entry);
-        /* Translate wtree2 error codes to mongolite error codes */
-        rc = _mongolite_translate_wtree2_error(rc);
+        /* Translate wtree3 error codes to mongolite error codes */
+        rc = _mongolite_translate_wtree3_error(rc);
         goto cleanup;
     }
 
     /* Create index spec for schema */
     index_spec = _index_spec_to_bson(index_name, keys, config);
     if (!index_spec) {
-        wtree2_tree_drop_index(tree, index_name, NULL);
-        bson_destroy(keys_copy);
-        keys_copy = NULL;
+        wtree3_tree_drop_index(tree, index_name, NULL);
+        keys_copy = NULL;  /* Already freed by cleanup callback */
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
                  "Failed to create index spec");
         rc = MONGOLITE_ENOMEM;
@@ -636,9 +641,8 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
     /* Add index to collection's indexes array */
     new_indexes = _add_index_to_array(col_entry.indexes, index_spec);
     if (!new_indexes) {
-        wtree2_tree_drop_index(tree, index_name, NULL);
-        bson_destroy(keys_copy);
-        keys_copy = NULL;
+        wtree3_tree_drop_index(tree, index_name, NULL);
+        keys_copy = NULL;  /* Already freed by cleanup callback */
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
                  "Failed to update indexes array");
         rc = MONGOLITE_ENOMEM;
@@ -656,7 +660,7 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
 
     rc = _mongolite_schema_put(db, &col_entry, error);
     if (rc != 0) {
-        wtree2_tree_drop_index(tree, index_name, NULL);
+        wtree3_tree_drop_index(tree, index_name, NULL);
         bson_destroy(keys_copy);
         keys_copy = NULL;
         _mongolite_schema_entry_free(&col_entry);
@@ -665,7 +669,7 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
 
     _mongolite_schema_entry_free(&col_entry);
 
-    /* Note: keys_copy ownership is transferred to wtree2 - do not free */
+    /* Note: keys_copy ownership is transferred to wtree3 - do not free */
     keys_copy = NULL;
 
     /* Invalidate index cache so it gets reloaded with new index */
@@ -685,11 +689,11 @@ cleanup:
 /*
  * mongolite_drop_index - Drop an index from a collection
  *
- * Uses wtree2's built-in index management:
+ * Uses wtree3's built-in index management:
  * 1. Validate parameters
  * 2. Check collection exists and index exists
  * 3. Prevent dropping _id index
- * 4. Drop index via wtree2_tree_drop_index
+ * 4. Drop index via wtree3_tree_drop_index
  * 5. Update collection schema
  */
 int mongolite_drop_index(mongolite_db_t *db, const char *collection,
@@ -735,17 +739,17 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
         return MONGOLITE_ENOTFOUND;
     }
 
-    /* Get collection tree (wtree2) */
-    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree3) */
+    wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
         _mongolite_schema_entry_free(&col_entry);
         _mongolite_unlock(db);
         return MONGOLITE_ERROR;
     }
 
-    /* Drop index via wtree2 */
-    rc = wtree2_tree_drop_index(tree, index_name, error);
-    if (rc != 0 && rc != WTREE2_ENOTFOUND) {
+    /* Drop index via wtree3 */
+    rc = wtree3_tree_drop_index(tree, index_name, error);
+    if (rc != 0 && rc != WTREE3_NOT_FOUND) {
         _mongolite_schema_entry_free(&col_entry);
         _mongolite_unlock(db);
         return rc;
@@ -780,8 +784,8 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
 }
 
 /* NOTE: Index maintenance functions (_mongolite_index_insert/delete/update)
- * have been removed. With wtree2, index maintenance is handled automatically
- * by wtree2_insert_one_txn, wtree2_update_txn, and wtree2_delete_one_txn.
+ * have been removed. With wtree3, index maintenance is handled automatically
+ * by wtree3_insert_one_txn, wtree3_update_txn, and wtree3_delete_one_txn.
  */
 
 /* ============================================================
@@ -967,14 +971,14 @@ mongolite_cached_index_t* _find_best_index(mongolite_db_t *db, const char *colle
 /*
  * _find_one_with_index - Use index to find a single document
  *
- * Uses wtree2 index seeking:
+ * Uses wtree3 index seeking:
  *   1. Build lookup key from filter values
- *   2. Seek in index using wtree2_index_seek_range
+ *   2. Seek in index using wtree3_index_seek_range
  *   3. Get document _id from index iterator
  *   4. Fetch document by _id from collection
  */
 bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
-                              wtree2_tree_t *col_tree,
+                              wtree3_tree_t *col_tree,
                               mongolite_cached_index_t *index,
                               const bson_t *filter, gerror_t *error) {
     if (!db || !collection || !col_tree || !index || !filter) {
@@ -989,8 +993,8 @@ bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
 
     bson_t *result = NULL;
 
-    /* Seek in index using wtree2 */
-    wtree2_iterator_t *iter = wtree2_index_seek_range(
+    /* Seek in index using wtree3 */
+    wtree3_iterator_t *iter = wtree3_index_seek_range(
         col_tree, index->name,
         bson_get_data(lookup_key), lookup_key->len,
         error);
@@ -1001,11 +1005,11 @@ bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
     }
 
     /* Check if we have a match */
-    if (wtree2_iterator_valid(iter)) {
+    if (wtree3_iterator_valid(iter)) {
         /* Get the index key to verify exact match */
         const void *found_key;
         size_t found_len;
-        if (wtree2_iterator_key(iter, &found_key, &found_len)) {
+        if (wtree3_iterator_key(iter, &found_key, &found_len)) {
             bson_t found_bson;
             if (bson_init_static(&found_bson, found_key, found_len)) {
                 /* Verify exact match */
@@ -1013,16 +1017,15 @@ bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
                     /* Match! Get the main key (document _id) */
                     const void *main_key;
                     size_t main_key_len;
-                    if (wtree2_index_iterator_main_key(iter, &main_key, &main_key_len)) {
+                    if (wtree3_index_iterator_main_key(iter, &main_key, &main_key_len)) {
                         /* main_key is the raw OID bytes */
                         if (main_key_len == sizeof(bson_oid_t)) {
                             /* Fetch document by _id using the SAME transaction as the iterator */
-                            wtree_txn_t *wtxn = wtree2_iterator_get_txn(iter);
-                            wtree_tree_t *main_tree = wtree2_tree_get_wtree(col_tree);
-                            if (wtxn && main_tree) {
+                            wtree3_txn_t *wtxn = wtree3_iterator_get_txn(iter);
+                            if (wtxn && col_tree) {
                                 const void *doc_data;
                                 size_t doc_len;
-                                int rc = wtree_get_txn(wtxn, main_tree,
+                                int rc = wtree3_get_txn(wtxn, col_tree,
                                                         main_key, main_key_len,
                                                         &doc_data, &doc_len, error);
                                 if (rc == 0) {
@@ -1036,7 +1039,7 @@ bson_t* _find_one_with_index(mongolite_db_t *db, const char *collection,
         }
     }
 
-    wtree2_iterator_close(iter);
+    wtree3_iterator_close(iter);
     bson_destroy(lookup_key);
 
     return result;

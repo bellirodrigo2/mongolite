@@ -7,7 +7,7 @@
  * - _id generation
  * - doc_count updates
  *
- * Note: With wtree2, index maintenance is automatic.
+ * Note: With wtree3, index maintenance is automatic.
  */
 
 #include "mongolite_internal.h"
@@ -44,7 +44,7 @@ int _mongolite_try_resize(mongolite_db_t *db, gerror_t *error) {
         return MONGOLITE_EINVAL;
     }
 
-    size_t current_size = wtree2_db_get_mapsize(db->wdb);
+    size_t current_size = wtree3_db_get_mapsize(db->wdb);
     size_t new_size = current_size * 2;
 
     /* Check for overflow */
@@ -63,7 +63,7 @@ int _mongolite_try_resize(mongolite_db_t *db, gerror_t *error) {
     }
 #endif
 
-    int rc = wtree2_db_resize(db->wdb, new_size, error);
+    int rc = wtree3_db_resize(db->wdb, new_size, error);
     if (rc == 0) {
         db->max_bytes = new_size;
     }
@@ -123,13 +123,13 @@ static bson_t* _ensure_id(const bson_t *doc, bson_oid_t *out_id, bool *was_gener
  * Internal: Check if error is MAP_FULL (needs resize)
  * ============================================================ */
 static inline bool _is_map_full_error(int rc) {
-    return (rc == WTREE_MAP_FULL || rc == WTREE2_MAP_FULL || rc == MDB_MAP_FULL);
+    return (rc == WTREE3_MAP_FULL || rc == WTREE3_MAP_FULL || rc == MDB_MAP_FULL);
 }
 
 /* ============================================================
  * Insert One
  *
- * With wtree2, indexes are maintained automatically.
+ * With wtree3, indexes are maintained automatically.
  * ============================================================ */
 
 MONGOLITE_HOT
@@ -140,8 +140,8 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
 
     _mongolite_lock(db);
 
-    /* Get collection tree (wtree2 - handles indexes automatically) */
-    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree3 - handles indexes automatically) */
+    wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         return MONGOLITE_ERROR;
@@ -164,7 +164,7 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
 retry_insert:
     /* Begin transaction */
     {
-        wtree2_txn_t *txn = _mongolite_get_write_txn(db, error);
+        wtree3_txn_t *txn = _mongolite_get_write_txn(db, error);
         if (MONGOLITE_UNLIKELY(!txn)) {
             if (id_generated) bson_destroy(final_doc);
             _mongolite_unlock(db);
@@ -172,8 +172,8 @@ retry_insert:
         }
 
         /* Insert: key = OID (12 bytes), value = BSON document
-         * wtree2 automatically maintains indexes */
-        rc = wtree2_insert_one_txn(txn, tree,
+         * wtree3 automatically maintains indexes */
+        rc = wtree3_insert_one_txn(txn, tree,
                                     oid.bytes, sizeof(oid.bytes),
                                     bson_get_data(final_doc), final_doc->len,
                                     error);
@@ -198,11 +198,11 @@ retry_insert:
 
             if (id_generated) bson_destroy(final_doc);
             _mongolite_unlock(db);
-            return _mongolite_translate_wtree2_error(rc);
+            return _mongolite_translate_wtree3_error(rc);
         }
 
-        /* Note: Index maintenance is automatic with wtree2_insert_one_txn */
-        /* Note: Doc count is maintained by wtree2 internally */
+        /* Note: Index maintenance is automatic with wtree3_insert_one_txn */
+        /* Note: Doc count is maintained by wtree3 internally */
 
         /* Update schema doc count for persistence */
         rc = _mongolite_update_doc_count_txn(db, txn, collection, 1, error);
@@ -263,8 +263,8 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 
     _mongolite_lock(db);
 
-    /* Get collection tree (wtree2 - handles indexes automatically) */
-    wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    /* Get collection tree (wtree3 - handles indexes automatically) */
+    wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         return MONGOLITE_ERROR;
@@ -288,7 +288,7 @@ int mongolite_insert_many(mongolite_db_t *db, const char *collection,
 retry_insert_many:
     {
         /* Begin transaction */
-        wtree2_txn_t *txn = _mongolite_get_write_txn(db, error);
+        wtree3_txn_t *txn = _mongolite_get_write_txn(db, error);
         if (MONGOLITE_UNLIKELY(!txn)) {
             free(oids);
             _mongolite_unlock(db);
@@ -327,8 +327,8 @@ retry_insert_many:
                 generated_docs[i] = final_doc;
             }
 
-            /* Insert via wtree2 - indexes maintained automatically */
-            rc = wtree2_insert_one_txn(txn, tree,
+            /* Insert via wtree3 - indexes maintained automatically */
+            rc = wtree3_insert_one_txn(txn, tree,
                                         oid.bytes, sizeof(oid.bytes),
                                         bson_get_data(final_doc), final_doc->len,
                                         error);
@@ -375,7 +375,7 @@ retry_insert_many:
 
             free(oids);
             _mongolite_unlock(db);
-            return _mongolite_translate_wtree2_error(rc);
+            return _mongolite_translate_wtree3_error(rc);
         }
 
         /* Update schema doc count for persistence */

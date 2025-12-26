@@ -162,7 +162,7 @@ char* _mongolite_index_tree_name(const char *collection_name, const char *index_
  * Tree Cache Operations
  * ============================================================ */
 
-wtree2_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name) {
+wtree3_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name) {
     if (!db || !name) return NULL;
     mongolite_tree_cache_entry_t *entry = db->tree_cache;
     while (entry) {
@@ -176,7 +176,7 @@ wtree2_tree_t* _mongolite_tree_cache_get(mongolite_db_t *db, const char *name) {
 
 int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
                               const char *tree_name, const bson_oid_t *oid,
-                              wtree2_tree_t *tree) {
+                              wtree3_tree_t *tree) {
     if (!db || !name || !tree_name || !tree) return MONGOLITE_EINVAL;
 
     /* Check if already exists */
@@ -190,7 +190,7 @@ int _mongolite_tree_cache_put(mongolite_db_t *db, const char *name,
     entry->name = strdup(name);
     entry->tree_name = strdup(tree_name);
     entry->tree = tree;
-    /* Note: doc_count is now managed by wtree2 internally via wtree2_tree_count() */
+    /* Note: doc_count is now managed by wtree3 internally via wtree3_tree_count() */
     if (oid) {
         memcpy(&entry->oid, oid, sizeof(bson_oid_t));
     }
@@ -209,7 +209,7 @@ static void _free_cached_indexes(mongolite_cached_index_t *indexes, size_t count
     for (size_t i = 0; i < count; i++) {
         free(indexes[i].name);
         if (indexes[i].keys) bson_destroy(indexes[i].keys);
-        /* Note: Index trees are now managed by wtree2 internally */
+        /* Note: Index trees are now managed by wtree3 internally */
     }
     free(indexes);
 }
@@ -222,7 +222,7 @@ void _mongolite_tree_cache_remove(mongolite_db_t *db, const char *name) {
         if (strcmp((*pp)->name, name) == 0) {
             mongolite_tree_cache_entry_t *to_remove = *pp;
             *pp = to_remove->next;
-            wtree2_tree_close(to_remove->tree);
+            wtree3_tree_close(to_remove->tree);
             free(to_remove->name);
             free(to_remove->tree_name);
             _free_cached_indexes(to_remove->indexes, to_remove->index_count);
@@ -238,7 +238,7 @@ void _mongolite_tree_cache_clear(mongolite_db_t *db) {
     if (!db) return;
     while (db->tree_cache) {
         mongolite_tree_cache_entry_t *next = db->tree_cache->next;
-        wtree2_tree_close(db->tree_cache->tree);
+        wtree3_tree_close(db->tree_cache->tree);
         free(db->tree_cache->name);
         free(db->tree_cache->tree_name);
         _free_cached_indexes(db->tree_cache->indexes, db->tree_cache->index_count);
@@ -249,24 +249,24 @@ void _mongolite_tree_cache_clear(mongolite_db_t *db) {
 }
 
 /*
- * Get doc count for a collection from wtree2.
- * Note: wtree2 now manages the count internally.
+ * Get doc count for a collection from wtree3.
+ * Note: wtree3 now manages the count internally.
  */
 int64_t mongolite_get_collection_doc_count(mongolite_db_t *db, const char *name) {
     if (!db || !name) return -1;
-    wtree2_tree_t *tree = _mongolite_tree_cache_get(db, name);
+    wtree3_tree_t *tree = _mongolite_tree_cache_get(db, name);
     if (!tree) {
         /* Try to open the collection tree */
         tree = _mongolite_get_collection_tree(db, name, NULL);
         if (!tree) return -1;
     }
-    return wtree2_tree_count(tree);
+    return wtree3_tree_count(tree);
 }
 
 /* ============================================================
  * Index Specs Cache Operations (for query optimization)
  *
- * Note: Index trees are now managed by wtree2 internally.
+ * Note: Index trees are now managed by wtree3 internally.
  * This cache only stores index specs for query optimization.
  * ============================================================ */
 
@@ -287,7 +287,7 @@ static mongolite_tree_cache_entry_t* _find_cache_entry(mongolite_db_t *db, const
  * Loads from schema on first access, returns cached array on subsequent calls.
  * Returns pointer to internal array (do not free).
  *
- * Note: Index trees are managed by wtree2 - this just caches specs for query optimization.
+ * Note: Index trees are managed by wtree3 - this just caches specs for query optimization.
  */
 mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
                                                          const char *collection,
@@ -301,7 +301,7 @@ mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
     mongolite_tree_cache_entry_t *entry = _find_cache_entry(db, collection);
     if (!entry) {
         /* Collection not in cache - need to open it first */
-        wtree2_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+        wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
         if (!tree) {
             *out_count = 0;
             return NULL;
@@ -365,7 +365,7 @@ mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
         return NULL;
     }
 
-    /* Populate cached index specs (no tree handles - wtree2 manages those) */
+    /* Populate cached index specs (no tree handles - wtree3 manages those) */
     size_t idx = 0;
     bson_iter_t iter;
     if (bson_iter_init(&iter, schema.indexes)) {
@@ -391,7 +391,7 @@ mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
                     continue;
                 }
 
-                /* Just store the spec - wtree2 manages the actual index tree */
+                /* Just store the spec - wtree3 manages the actual index tree */
                 entry->indexes[idx].name = name;
                 entry->indexes[idx].keys = keys;
                 entry->indexes[idx].unique = config.unique;
@@ -445,6 +445,6 @@ const char* mongolite_errstr(int error_code) {
         case MONGOLITE_EINVAL:    return "Invalid argument";
         case MONGOLITE_ENOMEM:    return "Out of memory";
         case MONGOLITE_EIO:       return "I/O error";
-        default:                  return wtree_strerror(error_code);
+        default:                  return wtree3_strerror(error_code);
     }
 }

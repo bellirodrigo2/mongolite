@@ -528,6 +528,7 @@ static void test_insert_many_with_ids(void **state) {
     /* First returned ID should match preset_id */
     assert_int_equal(0, bson_oid_compare(&returned_ids[0], &preset_id));
 
+    free(returned_ids);  /* Free the allocated IDs array */
     for (int i = 0; i < 3; i++) {
         bson_destroy(docs[i]);
     }

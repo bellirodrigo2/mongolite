@@ -3,7 +3,7 @@
 # ============================================================
 
 # ============================================================
-# LMDB (sources compiled into wtree/mongolite)
+# LMDB (sources compiled into wtree3/mongolite)
 # ============================================================
 
 set(LMDB_DIR ${CMAKE_SOURCE_DIR}/external/lmdb/libraries/liblmdb)
@@ -14,23 +14,23 @@ set(LMDB_SOURCES
 )
 
 # ============================================================
-# WTREE Library (includes LMDB)
+# WTREE3 Library (unified storage layer)
 # ============================================================
 
-set(WTREE_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/wtree.c
+set(WTREE3_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3.c
     ${LMDB_SOURCES}
 )
 
-add_library(wtree STATIC ${WTREE_SOURCES})
+add_library(wtree3 STATIC ${WTREE3_SOURCES})
 
-target_include_directories(wtree PUBLIC
+target_include_directories(wtree3 PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${LMDB_DIR}
 )
 
 # Export for tests
-set(WTREE_SOURCES ${WTREE_SOURCES} PARENT_SCOPE)
+set(WTREE3_SOURCES ${WTREE3_SOURCES} PARENT_SCOPE)
 
 # ============================================================
 # MONGOLITE Library
@@ -38,8 +38,7 @@ set(WTREE_SOURCES ${WTREE_SOURCES} PARENT_SCOPE)
 
 set(MONGOLITE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/gerror.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/wtree.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/wtree2.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_db.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_util.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_schema.c
