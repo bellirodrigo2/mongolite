@@ -10,14 +10,40 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <direct.h>
+#define mkdir(path, mode) _mkdir(path)
+#define rmdir(path) _rmdir(path)
+#define getpid() GetCurrentProcessId()
+#else
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 #include "wtree3.h"
 
 /* Test database path */
 static char test_db_path[256];
 static wtree3_db_t *test_db = NULL;
+
+/* ============================================================
+ * Helper Functions
+ * ============================================================ */
+
+/* Get temp directory path */
+static const char *get_temp_dir(void) {
+#ifdef _WIN32
+    static char temp_dir[MAX_PATH];
+    if (GetTempPathA(MAX_PATH, temp_dir) > 0) {
+        return temp_dir;
+    }
+    return "C:\\Windows\\Temp\\";
+#else
+    return "/tmp/";
+#endif
+}
 
 /* ============================================================
  * Test Fixtures
@@ -27,7 +53,8 @@ static int setup_db(void **state) {
     (void)state;
 
     /* Create temp directory */
-    snprintf(test_db_path, sizeof(test_db_path), "/tmp/test_wtree3_%d", getpid());
+    snprintf(test_db_path, sizeof(test_db_path), "%stest_wtree3_%lu",
+             get_temp_dir(), (unsigned long)getpid());
     mkdir(test_db_path, 0755);
 
     gerror_t error = {0};

@@ -307,5 +307,6 @@ help:
 	@echo ""
 	@echo "Advanced Options:"
 	@echo "  CMAKE_GENERATOR=Ninja make   Use Ninja instead of Make"
+	@echo "  CMAKE_GENERATOR="MinGW Makefiles" Use MinGW Makefiles on Windows"
 	@echo "  ENABLE_LTO=ON make release   Enable LTO for release build"
 	@echo ""
