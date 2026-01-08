@@ -1,0 +1,353 @@
+#include <stdio.h>
+#include <stddef.h>
+#include <bson/bson.h>
+#include "mongoc-matcher.h"
+#include "bsoncompare.h"
+#include "wregex.h"
+#ifdef WITH_YARA
+#include <yara.h>
+#endif //WITH_YARA
+#ifdef WITH_PROJECTION
+#include "mongoc-projection.h"
+#include "mongoc-redaction.h"
+#endif //WITH_PROJECTION
+#ifdef WITH_UTILS
+#include "mongoc-matcher-op-geojson.h"
+#include "mongoc-matcher-op-private.h"
+#ifdef WITH_YARA //&& WITH_UTILS
+#include "mongoc-matcher-op-yara.h"
+#endif //WITH_YARA && WITH_UTILS
+#endif //WITH_UTILS
+#ifdef WITH_MODULES
+#include "mongoc-matcher-op-modules.h"
+#endif
+
+// gcc -I/usr/include/libbson-1.0 -lbson-1.0 -lyara -shared -o libbsoncompare.so -fPIC bsoncompare.c mongoc-matcher.c mongoc-matcher-op.c mongoc-matcher-op-geojson.c mongoc-matcher-op-yara.c
+
+uint32_t
+bsonsearch_capability() // [ UTILS(8) | YARA(4) | PROJECTION(2) | BASIC(1) ]
+{
+    uint32_t capability = 1;
+    //-O2 should optimize this
+#ifdef WITH_PROJECTION
+    capability |= 2;
+#endif
+#ifdef WITH_YARA
+    capability |= 4;
+#endif
+#ifdef WITH_UTILS
+    capability |= 8;
+#endif
+    return capability;
+}
+
+#ifdef WITH_PROJECTION
+
+bool
+project_bson(mongoc_matcher_t *matcher,     //in
+             bson_t           *bson,        //in
+             bson_t           *projected)   //out
+{
+    bool result = false;
+    switch (matcher->optree->base.opcode){
+        case MONGOC_MATCHER_OPCODE_UNWIND:
+        case MONGOC_MATCHER_OPCODE_PROJECTION:
+        {
+            result = mongoc_matcher_projection_execute(matcher->optree, bson, projected);
+            break;
+        }
+        case MONGOC_MATCHER_OPCODE_REDACTION:
+        {
+            result = mongoc_matcher_redaction_execute(matcher->optree, bson, projected);
+            break;
+        }
+        default:
+            break;
+    }
+    return result;
+}
+#endif //WITH_PROJECTION
+
+
+#ifdef WITH_UTILS
+#ifdef WITH_PROJECTION //&& UTILS
+char *
+bsonsearch_project_json(mongoc_matcher_t *matcher,     //in
+                        bson_t           *bson)        //in
+{
+    bson_t *projected = bsonsearch_project_bson(matcher, bson);
+    char * str = bson_as_legacy_extended_json(projected, NULL);
+    bson_destroy(projected);
+    return str;
+}
+
+char *
+bsonsearch_project_canonical_json(mongoc_matcher_t *matcher,     //in
+                                  bson_t           *bson)        //in
+{
+    bson_t * projected = bsonsearch_project_bson(matcher, bson);
+
+    char * str = bson_as_canonical_extended_json(projected, NULL);
+    bson_destroy(projected);
+    return str;
+}
+
+//call this to free the cstring from project_json
+int
+bsonsearch_free_project_str(void * ptr)
+{
+    bson_free(ptr);
+    return 0;
+}
+
+bson_t *
+bsonsearch_project_bson(mongoc_matcher_t *matcher,     //in
+                        bson_t           *bson)        //in
+{
+    bson_t * projected = bson_new();
+    switch (matcher->optree->base.opcode){
+        case MONGOC_MATCHER_OPCODE_UNWIND:
+        case MONGOC_MATCHER_OPCODE_PROJECTION:
+        {
+            mongoc_matcher_projection_execute(matcher->optree, bson, projected);
+            break;
+        }
+        case MONGOC_MATCHER_OPCODE_REDACTION:
+        {
+            mongoc_matcher_redaction_execute(matcher->optree, bson, projected);
+            break;
+        }
+        default:
+            break;
+    }
+    return projected;
+}
+
+
+
+
+#endif //WITH_PROJECTION
+
+
+
+
+double bsonsearch_haversine_distance(double lon1, double lat1, double lon2, double lat2)
+{
+    double result;
+    if (!haversine_distance(lon1, lat1, lon2, lat2, &result)){
+        result = (double)-1;
+    }
+    return result;
+}
+
+double bsonsearch_haversine_distance_degrees(double lon1, double lat1, double lon2, double lat2)
+{
+    double result;
+    if (!haversine_distance(lon1*RADIAN_MAGIC_NUMBER, lat1*RADIAN_MAGIC_NUMBER, /*Defined in mongoc-matcher-op-geojson */
+                            lon2*RADIAN_MAGIC_NUMBER, lat2*RADIAN_MAGIC_NUMBER,
+                            &result)){
+        result = (double)-1;
+    }
+    return result;
+}
+double bsonsearch_get_crossarc_degrees(double lon1, double lat1, double lon2, double lat2, double lon3, double lat3)
+{
+    double result;
+    if (!bc_crossarc( lat1*RADIAN_MAGIC_NUMBER, lon1*RADIAN_MAGIC_NUMBER,
+                      lat2*RADIAN_MAGIC_NUMBER,  lon2*RADIAN_MAGIC_NUMBER,
+                      lat3*RADIAN_MAGIC_NUMBER,  lon3*RADIAN_MAGIC_NUMBER,
+                      &result)){
+        result = (double)-1;
+    }
+    return result;
+}
+#ifdef WITH_YARA //&& WITH_UTILS
+bool bsonsearch_yara_gte1_hit_raw(mongoc_matcher_t *matcher, char * line, ssize_t line_len)
+{
+    bool result;
+    mongoc_matcher_op_binary_flo *bin_flo;
+    bin_flo = (mongoc_matcher_op_binary_flo *)bson_malloc (sizeof *bin_flo);
+    bin_flo->cursor_pos = 0;
+    bin_flo->binary = (uint8_t*)line;
+    bin_flo->binary_len = (uint32_t)line_len;
+    result = _mongoc_matcher_op_yara_compare(&matcher->optree->compare, bin_flo);
+    bson_free(bin_flo);
+    return result;
+}
+#endif //WITH_YARA && WITH_UTILS
+#endif //WITH_UTILS
+
+
+
+int
+bsonsearch_startup()
+{
+    int result = 0;
+#ifdef WITH_YARA
+    result += yr_initialize();
+#endif //WITH_YARA
+#ifdef WITH_MODULES
+    result += _mongoc_matcher_op_module_startup();
+#endif
+    return result;
+}
+
+int
+bsonsearch_shutdown()
+{
+    int result = 0;
+    result += regex_destroy();
+#ifdef WITH_YARA
+    result += yr_finalize();
+#endif //WITH_YARA
+#ifdef WITH_MODULES
+    result += _mongoc_matcher_op_module_shutdown();
+#endif
+    return result;
+}
+
+
+mongoc_matcher_t *
+generate_matcher(const uint8_t *buf_spec,
+                 uint32_t       len_spec)
+{
+  bson_t *spec;
+  mongoc_matcher_t *matcher;
+  spec = bson_new_from_data(buf_spec, (uint32_t)len_spec);
+  matcher = mongoc_matcher_new (spec, NULL);
+  bson_destroy(spec);
+  return matcher;
+}
+
+mongoc_matcher_t *
+generate_matcher_from_json(const uint8_t *buf_spec,
+                            uint32_t       len_spec)
+{
+    bson_t *spec;
+    mongoc_matcher_t *matcher;
+    spec = bson_new_from_json(buf_spec, (uint32_t)len_spec, NULL);
+    matcher = mongoc_matcher_new (spec, NULL);
+    bson_destroy(spec);
+    return matcher;
+}
+
+int
+matcher_destroy (mongoc_matcher_t       *matcher)
+{
+  if (matcher != NULL)
+  {
+      mongoc_matcher_destroy (matcher);
+  }
+
+  return 0;
+}
+
+bson_t *
+generate_doc(const uint8_t *buf_doc,
+             uint32_t       len_doc)
+{
+  bson_t *doc;
+  doc = bson_new_from_data(buf_doc, (uint32_t)len_doc);
+  return doc;
+}
+bson_t *
+generate_doc_from_json(const uint8_t *buf_doc,
+                       uint32_t       len_doc)
+{
+    bson_t *doc;
+    doc = bson_new_from_json (buf_doc, (uint32_t)len_doc, NULL);
+    return doc;
+}
+
+
+int
+doc_destroy (bson_t *bson)
+{
+  bson_destroy(bson);
+  return 0;
+}
+
+int
+regex_destroy()
+{
+    wregex_cache_destroy();
+    return 0;
+}
+
+int
+regex_print()
+{
+    wregex_cache_stats();
+    return 0;
+}
+
+int
+matcher_compare(mongoc_matcher_t   *matcher,
+                const uint8_t      *buf_bson,
+                uint32_t           len_bson)
+{
+  bson_t *bson;
+  bool result = false;
+  bson = bson_new_from_data(buf_bson, (uint32_t)len_bson);
+  result = mongoc_matcher_match (matcher, bson);
+  bson_destroy(bson);
+  return result;
+}
+
+
+int
+matcher_compare_doc(mongoc_matcher_t   *matcher,
+                    bson_t             *bson)
+{
+  bool result = false;
+  result = mongoc_matcher_match (matcher, bson);
+  return result;
+}
+
+
+
+int
+compare(const uint8_t *buf_spec,
+        uint32_t       len_spec,
+        const uint8_t *buf_bson,
+        uint32_t       len_bson)
+{
+  bson_t *spec;
+  bson_t *bson;
+  bool result = false;
+  mongoc_matcher_t *matcher;
+  spec = bson_new_from_data(buf_spec, (uint32_t)len_spec);
+  bson = bson_new_from_data(buf_bson, (uint32_t)len_bson);
+  matcher = mongoc_matcher_new (spec, NULL);
+  result = mongoc_matcher_match (matcher, bson);
+  mongoc_matcher_destroy (matcher); //TODO: This will segfault on a spec that doesnt create a matcher
+                                    //      DESIRED! I want this thing to fail noisy for now, until I have a plan.
+  bson_destroy(spec);
+  bson_destroy(bson);
+  return result;
+}
+
+
+int
+get_array_len(bson_t        *b,
+              const char *namespace,
+              uint32_t      len_namespace)
+{
+    //TODO: libbson uses const char * dotkey.  I use const uint8_t * namespace.
+    //      I believe libbson will be changing char*'s to uint8_t at some point.
+    int result = 0;
+    bson_iter_t iter;
+    bson_iter_t baz;
+    if (bson_iter_init (&iter, b) &&
+        bson_iter_find_descendant (&iter, namespace, &baz) &&
+        BSON_ITER_HOLDS_ARRAY (&baz)) {
+        bson_iter_t right_array;
+        bson_iter_recurse(&iter, &right_array);
+        while (bson_iter_next(&right_array)) {
+            result++;
+        }
+    }
+  return result;
+}
+
+

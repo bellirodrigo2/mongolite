@@ -1,0 +1,6 @@
+[submodule "external/pcre2"]
+	path = external/pcre2
+	url = https://github.com/PCRE2Project/pcre2.git
+[submodule "external/mongoc"]
+	path = external/mongoc
+	url = https://github.com/mongodb/mongo-c-driver.git

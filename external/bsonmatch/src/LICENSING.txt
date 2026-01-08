@@ -1,0 +1,387 @@
+/*
+ * This project (bsoncompare/libbsoncompare) is licensed MIT
+ *
+ * Copyright (c) 2016 Bauman
+ * The MIT License (MIT)
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
+/*
+ * bsoncompare links against and imports header files from the libbson project
+ * libbson project under the following license
+ *
+ * Copyright 2013-2016 MongoDB, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+/*
+ * bsoncompare integrates code derived from the
+ * mongodb c driver project under the following license
+ *
+ * Copyright 2013-2016 MongoDB, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+
+/*
+ * Geospatial bounding code is based on the algorithm Described here:
+ * https://www.ecse.rpi.edu/Homepages/wrf/Research/Short_Notes/pnpoly.html
+ *
+ *
+ * Copyright (c) 1970-2003, Wm. Randolph Franklin
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimers.
+ * 2. Redistributions in binary form must reproduce the above copyright notice in the documentation and/or other materials provided with the distribution.
+ * 3. The name of W. Randolph Franklin may not be used to endorse or promote products derived from this Software without specific prior written permission.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+ * INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+ * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
+ /*
+ *---------------------------------------------------------------------------------------------------------------------
+ bsoncompare links against libpcre (BSD licensed) to perform regex operations
+
+ (http://www.pcre.org/licence.txt --retreived April 29, 2016)
+
+ PCRE2 LICENCE
+ -------------
+
+ PCRE2 is a library of functions to support regular expressions whose syntax
+ and semantics are as close as possible to those of the Perl 5 language.
+
+ Release 10 of PCRE2 is distributed under the terms of the "BSD" licence, as
+ specified below. The documentation for PCRE2, supplied in the "doc"
+ directory, is distributed under the same terms as the software itself. The data
+ in the testdata directory is not copyrighted and is in the public domain.
+
+ The basic library functions are written in C and are freestanding. Also
+ included in the distribution is a just-in-time compiler that can be used to
+ optimize pattern matching. This is an optional feature that can be omitted when
+ the library is built.
+
+
+ THE BASIC LIBRARY FUNCTIONS
+ ---------------------------
+
+ Written by:       Philip Hazel
+ Email local part: ph10
+ Email domain:     cam.ac.uk
+
+ University of Cambridge Computing Service,
+ Cambridge, England.
+
+ Copyright (c) 1997-2016 University of Cambridge
+ All rights reserved.
+
+
+ PCRE2 JUST-IN-TIME COMPILATION SUPPORT
+ --------------------------------------
+
+ Written by:       Zoltan Herczeg
+ Email local part: hzmester
+ Emain domain:     freemail.hu
+
+ Copyright(c) 2010-2016 Zoltan Herczeg
+ All rights reserved.
+
+
+ STACK-LESS JUST-IN-TIME COMPILER
+ --------------------------------
+
+ Written by:       Zoltan Herczeg
+ Email local part: hzmester
+ Emain domain:     freemail.hu
+
+ Copyright(c) 2009-2016 Zoltan Herczeg
+ All rights reserved.
+
+
+ THE "BSD" LICENCE
+ -----------------
+
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+
+     * Redistributions of source code must retain the above copyright notice,
+       this list of conditions and the following disclaimer.
+
+     * Redistributions in binary form must reproduce the above copyright
+       notice, this list of conditions and the following disclaimer in the
+       documentation and/or other materials provided with the distribution.
+
+     * Neither the name of the University of Cambridge nor the names of any
+       contributors may be used to endorse or promote products derived from this
+       software without specific prior written permission.
+
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+ LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ POSSIBILITY OF SUCH DAMAGE.
+  *---------------------------------------------------------------------------------------------------------------------
+  */
+
+  /*
+   * bsoncompare may (pending appropriate compile options) link against libyara
+   *
+   * yara project under the following license
+   *
+   * https://raw.githubusercontent.com/plusvic/yara/master/COPYING (retreived April 29, 2016)
+   *
+   * Licensed under the Apache License, Version 2.0 (the "License");
+   * you may not use this file except in compliance with the License.
+   * You may obtain a copy of the License at
+   *
+   *   http://www.apache.org/licenses/LICENSE-2.0
+   *
+   * Unless required by applicable law or agreed to in writing, software
+   * distributed under the License is distributed on an "AS IS" BASIS,
+   * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   * See the License for the specific language governing permissions and
+   * limitations under the License.
+   */
+
+  /*
+  *---------------------------------------------------------------------------------------------------------------------
+  bsoncompare makes use of (imports) hashtable macros implemented uthash.h.
+      compiling this library requires the maintainer obtain a system wide uthash.h
+      uthash.h is not distributed (in source format) with this library.
+
+
+      uthash header file is licensed BSD:
+
+        Copyright (c) 2005-2015, Troy D. Hanson  http://troydhanson.github.com/uthash/
+        All rights reserved.
+
+        Redistribution and use in source and binary forms, with or without
+        modification, are permitted provided that the following conditions are met:
+
+            * Redistributions of source code must retain the above copyright
+              notice, this list of conditions and the following disclaimer.
+
+        THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+        IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+        TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+        PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER
+        OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+        EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+        PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+        PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+        LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+        NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+        SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  *---------------------------------------------------------------------------------------------------------------------
+*/
+
+bsoncompare  may (pending appropriate compile options) link against libstemmer
+
+      compiling this library requires the maintainer obtain a system wide libstemmer and libstemmer-devel
+
+      libstemmer and libstemmer-devel is licensed BSD:
+
+      Copyright (c) 2001, Dr Martin Porter, and (for the Java developments)
+      Copyright (c) 2002, Richard Boulton
+      All rights reserved.
+
+      Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+      1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+
+      2. Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+
+      THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+  *---------------------------------------------------------------------------------------------------------------------
+  */
+
+  bsoncompare  may (pending appropriate compile options) link against libaspell
+
+        compiling this library requires the maintainer obtain a system wide libaspell and libaspell-devel and aspell dictionaries
+
+        libaspell and libaspell-devel is licensed LGPL:
+
+        http://aspell.net/man-html/GNU-Lesser-General-Public-License.html
+
+
+         Copyright © 1991, 1999 Free Software Foundation, Inc.
+         59 Temple Place – Suite 330, Boston, MA 02111-1307, USA
+
+         Everyone is permitted to copy and distribute verbatim copies
+         of this license document, but changing it is not allowed.
+
+         [This is the first released version of the Lesser GPL.  It also counts
+         as the successor of the GNU Library Public License, version 2, hence the
+         version number 2.1.]
+
+
+    *---------------------------------------------------------------------------------------------------------------------
+
+  */
+
+  bsoncompare  may (pending appropriate compile options) link against libsodium
+
+        compiling this library requires the maintainer obtain a system wide libsodium and libsodium-devel
+
+        libsodium and libsodium-devel is licensed ISC:
+
+        https://raw.githubusercontent.com/jedisct1/libsodium/master/LICENSE
+
+
+        /*
+         * ISC License
+         *
+         * Copyright (c) 2013-2017
+         * Frank Denis <j at pureftpd dot org>
+         *
+         * Permission to use, copy, modify, and/or distribute this software for any
+         * purpose with or without fee is hereby granted, provided that the above
+         * copyright notice and this permission notice appear in all copies.
+         *
+         * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+         * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+         * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+         * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+         * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+         * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+         * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+         */
+
+
+
+    *---------------------------------------------------------------------------------------------------------------------
+
+
+
+
+
+  bsoncompare  may (pending appropriate compile options) link against discodb
+
+        compiling this library requires the maintainer obtain a system wide libdiscodb and libdiscodb-devel
+
+        NOTE: libdiscodb requires a system wide libcmph-dev which is dual licensed LGPL2 and MPL1.1
+              Depndencies are completely optional to bsonsearch
+
+
+        libdiscodb and libdiscodb-devel is licensed 3-Clause BSD:
+
+        https://github.com/bauman/discodb/blob/py3/DISCODB_LICENSING.txt
+        forked from
+        https://github.com/discoproject/discodb/blob/master/LICENSE
+
+        Copyright (c) 2008, Nokia Corporation.
+        All rights reserved.
+
+        Redistribution and use in source and binary forms, with or without
+        modification, are permitted provided that the following conditions are
+        met:
+
+            * Redistributions of source code must retain the above copyright
+              notice, this list of conditions and the following disclaimer.
+
+            * Redistributions in binary form must reproduce the above copyright
+              notice, this list of conditions and the following disclaimer in the
+              documentation and/or other materials provided with the distribution.
+
+            * Neither the name of the author nor the names of its contributors
+              may be used to endorse or promote products derived from this
+              software without specific prior written permission.
+
+        THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+        "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+        LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+        A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+        OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+        SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED
+        TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+        PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+        LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+        NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+        SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+    *---------------------------------------------------------------------------------------------------------------------
+
+bsoncompare  may (pending appropriate compile options) link against libduktape
+
+        compiling this library requires the maintainer obtain a system wide libduktape and libduktape-development packages
+
+        libduktape and libduktape-devel is licensed 3-Clause BSD:
+
+        https://github.com/svaarala/duktape/blob/master/LICENSE.txt
+
+        The MIT License (MIT)
+
+        Copyright (c) 2013-present, Duktape authors (see AUTHORS.rst)
+
+        Permission is hereby granted, free of charge, to any person obtaining a copy
+        of this software and associated documentation files (the "Software"), to deal
+        in the Software without restriction, including without limitation the rights
+        to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+        copies of the Software, and to permit persons to whom the Software is
+        furnished to do so, subject to the following conditions:
+
+        The above copyright notice and this permission notice shall be included in
+        all copies or substantial portions of the Software.
+
+        THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+        IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+        FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+        AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+        LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+        OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+        THE SOFTWARE.
