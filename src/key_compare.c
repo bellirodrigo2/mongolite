@@ -464,7 +464,11 @@ bool bson_index_key_extractor(const void *value, size_t value_len,
         return false;
     }
 
-    const bson_t *keys = (const bson_t *)user_data;
+    /* user_data is raw BSON bytes of the keys spec, not a bson_t pointer */
+    bson_t keys;
+    if (!bson_init_static(&keys, user_data, BSON_UINT32_FROM_LE(*(uint32_t*)user_data))) {
+        return false;
+    }
 
     /* Parse the document from raw bytes */
     bson_t doc;
@@ -473,7 +477,7 @@ bool bson_index_key_extractor(const void *value, size_t value_len,
     }
 
     /* Extract the index key fields */
-    bson_t *index_key = bson_extract_index_key(&doc, keys);
+    bson_t *index_key = bson_extract_index_key(&doc, &keys);
     if (!index_key) {
         return false;
     }
@@ -502,7 +506,11 @@ bool bson_index_key_is_null(const void *value, size_t value_len, void *user_data
         return true;
     }
 
-    const bson_t *keys = (const bson_t *)user_data;
+    /* user_data is raw BSON bytes of the keys spec */
+    bson_t keys;
+    if (!bson_init_static(&keys, user_data, BSON_UINT32_FROM_LE(*(uint32_t*)user_data))) {
+        return true;
+    }
 
     bson_t doc;
     if (!bson_init_static(&doc, value, value_len)) {
@@ -510,7 +518,7 @@ bool bson_index_key_is_null(const void *value, size_t value_len, void *user_data
     }
 
     bson_iter_t keys_iter;
-    if (!bson_iter_init(&keys_iter, keys)) {
+    if (!bson_iter_init(&keys_iter, &keys)) {
         return true;
     }
 

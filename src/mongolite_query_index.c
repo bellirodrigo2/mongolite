@@ -63,6 +63,8 @@ query_analysis_t* _analyze_query_for_index(const bson_t *filter) {
         return NULL;
     }
 
+    bool has_non_id_field = false;
+
     while (bson_iter_next(&iter)) {
         const char *key = bson_iter_key(&iter);
 
@@ -72,7 +74,14 @@ query_analysis_t* _analyze_query_for_index(const bson_t *filter) {
             continue;
         }
 
-        /* Check for nested operators */
+        /* Skip _id field - it has dedicated optimization */
+        if (strcmp(key, "_id") == 0) {
+            continue;
+        }
+
+        has_non_id_field = true;
+
+        /* Check for nested operators (e.g., {"age": {"$gt": 25}}) */
         if (BSON_ITER_HOLDS_DOCUMENT(&iter)) {
             uint32_t subdoc_len;
             const uint8_t *subdoc_data;
@@ -84,28 +93,35 @@ query_analysis_t* _analyze_query_for_index(const bson_t *filter) {
                 if (bson_iter_init(&subiter, &subdoc)) {
                     while (bson_iter_next(&subiter)) {
                         if (bson_iter_key(&subiter)[0] == '$') {
-                            analysis->is_simple_equality = false;
-                            break;
+                            /* Has operator - not simple equality, return NULL */
+                            free(analysis->equality_fields);
+                            free(analysis);
+                            return NULL;
                         }
                     }
                 }
             }
         }
 
-        /* Add to equality fields if still simple */
-        if (analysis->is_simple_equality) {
-            analysis->equality_fields[analysis->equality_count] = strdup(key);
-            if (!analysis->equality_fields[analysis->equality_count]) {
-                /* Allocation failed - cleanup */
-                for (size_t i = 0; i < analysis->equality_count; i++) {
-                    free(analysis->equality_fields[i]);
-                }
-                free(analysis->equality_fields);
-                free(analysis);
-                return NULL;
+        /* Add to equality fields */
+        analysis->equality_fields[analysis->equality_count] = strdup(key);
+        if (!analysis->equality_fields[analysis->equality_count]) {
+            /* Allocation failed - cleanup */
+            for (size_t i = 0; i < analysis->equality_count; i++) {
+                free(analysis->equality_fields[i]);
             }
-            analysis->equality_count++;
+            free(analysis->equality_fields);
+            free(analysis);
+            return NULL;
         }
+        analysis->equality_count++;
+    }
+
+    /* If only _id field, return NULL (dedicated optimization handles it) */
+    if (!has_non_id_field || analysis->equality_count == 0) {
+        free(analysis->equality_fields);
+        free(analysis);
+        return NULL;
     }
 
     return analysis;
@@ -303,26 +319,36 @@ bson_t* _find_one_with_index(mongolite_db_t *db,
             bson_oid_t doc_oid;
             memcpy(doc_oid.bytes, val.mv_data, 12);
 
-            /* Fetch document from main tree */
-            bson_t *doc = _mongolite_find_by_id(db, col_tree, &doc_oid, error);
-            if (doc) {
-                /* Validate with matcher (handles sparse indexes) */
-                if (mongoc_matcher_match(matcher, doc)) {
-                    result = doc;
-                } else {
-                    bson_destroy(doc);
+            /* Fetch document from main tree using SAME transaction */
+            const void *doc_data;
+            size_t doc_len;
+            int get_rc = wtree3_get_txn(txn, col_tree, doc_oid.bytes, sizeof(doc_oid.bytes),
+                                        &doc_data, &doc_len, error);
+            if (get_rc == 0) {
+                bson_t *doc = bson_new_from_data(doc_data, doc_len);
+                if (doc) {
+                    /* Validate with matcher (handles sparse indexes) */
+                    if (mongoc_matcher_match(matcher, doc)) {
+                        result = doc;
+                    } else {
+                        bson_destroy(doc);
 
-                    /* For non-unique indexes, try next duplicate */
-                    if (!index->unique) {
-                        while (mdb_cursor_get(cursor, &key, &val, MDB_NEXT_DUP) == MDB_SUCCESS) {
-                            if (val.mv_size == 12) {
-                                memcpy(doc_oid.bytes, val.mv_data, 12);
-                                doc = _mongolite_find_by_id(db, col_tree, &doc_oid, error);
-                                if (doc && mongoc_matcher_match(matcher, doc)) {
-                                    result = doc;
-                                    break;
+                        /* For non-unique indexes, try next duplicate */
+                        if (!index->unique) {
+                            while (mdb_cursor_get(cursor, &key, &val, MDB_NEXT_DUP) == MDB_SUCCESS) {
+                                if (val.mv_size == 12) {
+                                    memcpy(doc_oid.bytes, val.mv_data, 12);
+                                    get_rc = wtree3_get_txn(txn, col_tree, doc_oid.bytes, sizeof(doc_oid.bytes),
+                                                            &doc_data, &doc_len, NULL);
+                                    if (get_rc == 0) {
+                                        doc = bson_new_from_data(doc_data, doc_len);
+                                        if (doc && mongoc_matcher_match(matcher, doc)) {
+                                            result = doc;
+                                            break;
+                                        }
+                                        if (doc) bson_destroy(doc);
+                                    }
                                 }
-                                if (doc) bson_destroy(doc);
                             }
                         }
                     }

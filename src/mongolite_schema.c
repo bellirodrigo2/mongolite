@@ -211,8 +211,8 @@ int _mongolite_schema_put(mongolite_db_t *db, const mongolite_schema_entry_t *en
         return MONGOLITE_ERROR;
     }
 
-    /* Use update (overwrite) instead of insert to allow updates */
-    int rc = wtree3_update_txn(txn, db->schema_tree,
+    /* Use upsert (insert or update) to handle both new and existing entries */
+    int rc = wtree3_upsert_txn(txn, db->schema_tree,
                               entry->name, strlen(entry->name),
                               bson_get_data(doc), doc->len, error);
 

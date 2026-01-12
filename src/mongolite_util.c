@@ -145,6 +145,21 @@ char* _mongolite_collection_tree_name(const char *collection_name) {
     return tree_name;
 }
 
+char* _mongolite_index_tree_name(const char *collection_name, const char *index_name) {
+    if (!collection_name || !index_name) return NULL;
+    size_t prefix_len = strlen(MONGOLITE_IDX_PREFIX);
+    size_t col_len = strlen(collection_name);
+    size_t idx_len = strlen(index_name);
+    /* Format: idx:<collection>:<index> */
+    char *tree_name = malloc(prefix_len + col_len + 1 + idx_len + 1);
+    if (!tree_name) return NULL;
+    memcpy(tree_name, MONGOLITE_IDX_PREFIX, prefix_len);
+    memcpy(tree_name + prefix_len, collection_name, col_len);
+    tree_name[prefix_len + col_len] = ':';
+    memcpy(tree_name + prefix_len + col_len + 1, index_name, idx_len + 1);
+    return tree_name;
+}
+
 /* ============================================================
  * Tree Cache Operations
  * ============================================================ */

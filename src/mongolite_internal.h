@@ -22,6 +22,7 @@ extern "C" {
 /* Tree naming conventions */
 #define MONGOLITE_SCHEMA_TREE   "_mongolite_schema"
 #define MONGOLITE_COL_PREFIX    "col:"
+#define MONGOLITE_IDX_PREFIX    "idx:"
 
 /* Default limits */
 #define MONGOLITE_DEFAULT_MAPSIZE     (1024ULL * 1024 * 1024)  /* 1GB */
@@ -259,6 +260,7 @@ void _mongolite_invalidate_index_cache(mongolite_db_t *db, const char *collectio
 
 /* Build tree names */
 char* _mongolite_collection_tree_name(const char *collection_name);
+char* _mongolite_index_tree_name(const char *collection_name, const char *index_name);
 
 /* Timestamp helpers */
 int64_t _mongolite_now_ms(void);

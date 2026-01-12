@@ -123,7 +123,7 @@ static bson_t* _ensure_id(const bson_t *doc, bson_oid_t *out_id, bool *was_gener
  * Internal: Check if error is MAP_FULL (needs resize)
  * ============================================================ */
 static inline bool _is_map_full_error(int rc) {
-    return (rc == WTREE3_MAP_FULL || rc == WTREE3_MAP_FULL || rc == MDB_MAP_FULL);
+    return (rc == WTREE3_MAP_FULL || rc == MDB_MAP_FULL);
 }
 
 /* ============================================================

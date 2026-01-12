@@ -93,25 +93,22 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
     bson_oid_t oid;
     bool has_id = _mongolite_is_id_query(filter, &oid);
 
-    if (!upsert && !has_id) {
-        /* Non-upsert without _id: need to find document first (slow path) */
+    if (!has_id) {
+        /* No _id in filter: need to find document first (slow path) */
         bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
-        if (!existing) {
-            return 0;  /* No match, not an error */
-        }
-
-        /* Extract _id from found document */
-        if (MONGOLITE_UNLIKELY(!extract_doc_oid_with_error(existing, &oid, error))) {
+        if (existing) {
+            /* Extract _id from found document */
+            if (MONGOLITE_UNLIKELY(!extract_doc_oid_with_error(existing, &oid, error))) {
+                bson_destroy(existing);
+                return -1;
+            }
             bson_destroy(existing);
-            return -1;
+            has_id = true;
+        } else if (!upsert) {
+            /* No match and not upsert - nothing to do */
+            return 0;
         }
-        bson_destroy(existing);
-        has_id = true;
-    }
-
-    if (!has_id && !upsert) {
-        /* No _id and not upsert - nothing to do */
-        return 0;
+        /* If upsert and no match, has_id remains false - will insert new doc */
     }
 
     /* Lock database */
@@ -315,23 +312,19 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
  * Update many documents
  * ============================================================ */
 
-/* Context for update_many scan callback */
+/* Context for collecting keys that match filter */
 typedef struct {
-    mongolite_db_t *db;
-    wtree3_txn_t *txn;
-    wtree3_tree_t *tree;
-    const bson_t *update;
     mongoc_matcher_t *matcher;
-    int64_t count;
-    gerror_t *error;
-    bool has_error;
-} update_many_ctx_t;
+    bson_oid_t *keys;      /* Array of matching keys */
+    size_t count;          /* Number of collected keys */
+    size_t capacity;       /* Allocated capacity */
+} collect_keys_ctx_t;
 
-/* Scan callback for update_many - applies updates directly during scan */
-static bool _update_many_scan_cb(const void *key, size_t key_len,
-                                  const void *value, size_t value_len,
-                                  void *user_data) {
-    update_many_ctx_t *ctx = (update_many_ctx_t *)user_data;
+/* Scan callback to collect matching document keys */
+static bool _collect_matching_keys_cb(const void *key, size_t key_len,
+                                       const void *value, size_t value_len,
+                                       void *user_data) {
+    collect_keys_ctx_t *ctx = (collect_keys_ctx_t *)user_data;
 
     /* Parse document */
     bson_t doc;
@@ -342,26 +335,23 @@ static bool _update_many_scan_cb(const void *key, size_t key_len,
         return true;  /* Continue scanning */
     }
 
-    /* Apply update operators */
-    bson_t *updated = bson_update_apply(&doc, ctx->update, ctx->error);
-    if (!updated) {
-        ctx->has_error = true;
-        return false;  /* Stop scanning */
+    /* Grow array if needed */
+    if (ctx->count >= ctx->capacity) {
+        size_t new_cap = ctx->capacity == 0 ? 16 : ctx->capacity * 2;
+        bson_oid_t *new_keys = realloc(ctx->keys, new_cap * sizeof(bson_oid_t));
+        if (!new_keys) {
+            return false;  /* Stop on allocation failure */
+        }
+        ctx->keys = new_keys;
+        ctx->capacity = new_cap;
     }
 
-    /* Update document in place */
-    int rc = wtree3_update_txn(ctx->txn, ctx->tree,
-                                key, key_len,
-                                bson_get_data(updated), updated->len,
-                                ctx->error);
-    bson_destroy(updated);
-
-    if (rc != 0) {
-        ctx->has_error = true;
-        return false;  /* Stop scanning */
+    /* Store key (must be OID size) */
+    if (key_len == sizeof(bson_oid_t)) {
+        memcpy(&ctx->keys[ctx->count], key, sizeof(bson_oid_t));
+        ctx->count++;
     }
 
-    ctx->count++;
     return true;  /* Continue scanning */
 }
 
@@ -406,36 +396,77 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Use scan to apply updates directly */
-    update_many_ctx_t ctx = {
-        .db = db,
-        .txn = txn,
-        .tree = tree,
-        .update = update,
+    /* Phase 1: Collect all matching document keys
+     * This avoids cursor invalidation issues when modifying during iteration */
+    collect_keys_ctx_t collect_ctx = {
         .matcher = matcher,
+        .keys = NULL,
         .count = 0,
-        .error = error,
-        .has_error = false
+        .capacity = 0
     };
 
     int rc = wtree3_scan_range_txn(txn, tree,
                                     NULL, 0,  /* Start from beginning */
                                     NULL, 0,  /* Scan to end */
-                                    _update_many_scan_cb, &ctx,
+                                    _collect_matching_keys_cb, &collect_ctx,
                                     error);
 
     if (matcher) {
         mongoc_matcher_destroy(matcher);
     }
 
-    if (rc != 0 || ctx.has_error) {
+    if (rc != 0) {
+        free(collect_ctx.keys);
         _mongolite_abort_if_auto(db, txn);
         _mongolite_unlock(db);
         return -1;
     }
 
+    /* Phase 2: Apply updates to all collected keys */
+    int64_t updated_count = 0;
+    for (size_t i = 0; i < collect_ctx.count; i++) {
+        /* Get current document */
+        const void *value;
+        size_t value_len;
+        rc = wtree3_get_txn(txn, tree, collect_ctx.keys[i].bytes, sizeof(bson_oid_t),
+                            &value, &value_len, error);
+        if (rc != 0) {
+            continue;  /* Document may have been deleted, skip */
+        }
+
+        bson_t doc;
+        bson_init_static(&doc, value, value_len);
+
+        /* Apply update operators */
+        bson_t *updated_doc = bson_update_apply(&doc, update, error);
+        if (!updated_doc) {
+            free(collect_ctx.keys);
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            return -1;
+        }
+
+        /* Update document */
+        rc = wtree3_update_txn(txn, tree,
+                               collect_ctx.keys[i].bytes, sizeof(bson_oid_t),
+                               bson_get_data(updated_doc), updated_doc->len,
+                               error);
+        bson_destroy(updated_doc);
+
+        if (rc != 0) {
+            free(collect_ctx.keys);
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            return -1;
+        }
+
+        updated_count++;
+    }
+
+    free(collect_ctx.keys);
+
     /* Handle upsert if no matches */
-    if (ctx.count == 0 && upsert) {
+    if (updated_count == 0 && upsert) {
         /* Build base document from filter equality conditions */
         bson_t *base = bson_upsert_build_base(filter);
         if (MONGOLITE_UNLIKELY(!base)) {
@@ -504,7 +535,7 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
         }
 
         bson_destroy(new_doc);
-        ctx.count = 1;  /* We inserted one document */
+        updated_count = 1;  /* We inserted one document */
     }
 
     rc = _mongolite_commit_if_auto(db, txn, error);
@@ -514,9 +545,9 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
     }
 
     if (modified_count) {
-        *modified_count = ctx.count;
+        *modified_count = updated_count;
     }
-    db->changes = (int)ctx.count;
+    db->changes = (int)updated_count;
     _mongolite_unlock(db);
     return 0;
 }
