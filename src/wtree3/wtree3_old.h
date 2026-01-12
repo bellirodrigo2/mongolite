@@ -89,6 +89,37 @@ typedef bool (*wtree3_index_key_fn)(
 typedef void (*wtree3_user_data_cleanup_fn)(void *user_data);
 
 /*
+ * User data persistence callbacks
+ *
+ * These callbacks enable user_data to be persisted and restored across DB sessions.
+ */
+typedef struct wtree3_user_data_persistence {
+    /*
+     * Serialize user_data to bytes
+     *
+     * Parameters:
+     *   user_data - The user_data to serialize
+     *   out_data  - Output: allocated data buffer (caller will free with free())
+     *   out_len   - Output: length of serialized data
+     *
+     * Returns: 0 on success, non-zero on error
+     */
+    int (*serialize)(void *user_data, void **out_data, size_t *out_len);
+
+    /*
+     * Deserialize bytes to user_data
+     *
+     * Parameters:
+     *   data - Serialized data
+     *   len  - Length of serialized data
+     *
+     * Returns: Allocated user_data (must be compatible with user_data_cleanup),
+     *          or NULL on error
+     */
+    void* (*deserialize)(const void *data, size_t len);
+} wtree3_user_data_persistence_t;
+
+/*
  * Index configuration
  */
 typedef struct wtree3_index_config {
@@ -99,6 +130,7 @@ typedef struct wtree3_index_config {
     bool unique;                /* Unique constraint */
     bool sparse;                /* Skip entries where key_fn returns false */
     MDB_cmp_func *compare;      /* Custom key comparator (NULL for default) */
+    wtree3_user_data_persistence_t *persistence; /* Optional persistence callbacks */
 } wtree3_index_config_t;
 
 /* Key-Value pair for batch operations */
@@ -278,6 +310,67 @@ bool wtree3_tree_has_index(wtree3_tree_t *tree, const char *index_name);
 
 /* Get index count */
 size_t wtree3_tree_index_count(wtree3_tree_t *tree);
+
+/* ============================================================
+ * Index Persistence Operations
+ * ============================================================ */
+
+/*
+ * Save index metadata to persistent storage
+ *
+ * Stores serialized user_data and index configuration for restoration
+ * across DB sessions. Called automatically by wtree3_tree_add_index()
+ * if persistence callbacks are provided.
+ *
+ * Returns: 0 on success, error code on failure
+ */
+int wtree3_index_save_metadata(
+    wtree3_tree_t *tree,
+    const char *index_name,
+    gerror_t *error
+);
+
+/*
+ * Load index metadata and reconstruct index
+ *
+ * Deserializes user_data and restores index configuration from persistent
+ * storage. Used when reopening an existing database with indexes.
+ *
+ * Parameters:
+ *   tree        - Tree handle
+ *   index_name  - Index name to load
+ *   key_fn      - Key extraction function (must match original)
+ *   persistence - Persistence callbacks (deserialize will be called)
+ *   error       - Error output
+ *
+ * Returns: 0 on success, WTREE3_NOT_FOUND if no metadata exists
+ */
+int wtree3_index_load_metadata(
+    wtree3_tree_t *tree,
+    const char *index_name,
+    wtree3_index_key_fn key_fn,
+    wtree3_user_data_persistence_t *persistence,
+    gerror_t *error
+);
+
+/*
+ * List all persisted indexes for a tree
+ *
+ * Returns array of index names that have persisted metadata.
+ * Call wtree3_index_list_free() to free the returned array.
+ *
+ * Returns: NULL-terminated array of strings, or NULL on error
+ */
+char** wtree3_tree_list_persisted_indexes(
+    wtree3_tree_t *tree,
+    size_t *count,
+    gerror_t *error
+);
+
+/*
+ * Free array returned by wtree3_tree_list_persisted_indexes()
+ */
+void wtree3_index_list_free(char **list, size_t count);
 
 /* ============================================================
  * Data Operations (With Transaction)

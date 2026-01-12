@@ -14,11 +14,21 @@ set(LMDB_SOURCES
 )
 
 # ============================================================
-# WTREE3 Library (unified storage layer)
+# WTREE3 Library (unified storage layer - modular version)
 # ============================================================
 
 set(WTREE3_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_core.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_crud.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_index.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_index_persist.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_iterator.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_scan.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_tree.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_memopt.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_extractor_registry.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wvector.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/gerror.c
     ${LMDB_SOURCES}
 )
 
@@ -26,6 +36,7 @@ add_library(wtree3 STATIC ${WTREE3_SOURCES})
 
 target_include_directories(wtree3 PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3
     ${LMDB_DIR}
 )
 
@@ -38,7 +49,18 @@ set(WTREE3_SOURCES ${WTREE3_SOURCES} PARENT_SCOPE)
 
 set(MONGOLITE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/gerror.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3.c
+    # wtree3 modular sources
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_core.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_crud.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_index.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_index_persist.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_iterator.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_scan.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_tree.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_memopt.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wtree3_extractor_registry.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/wtree3/wvector.c
+    # mongolite sources
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_db.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_util.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_schema.c
@@ -46,6 +68,7 @@ set(MONGOLITE_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_collection.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_insert.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_find.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_query_index.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_cursor.c
     ${CMAKE_CURRENT_SOURCE_DIR}/bson_update.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_update.c

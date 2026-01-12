@@ -11,6 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "mongoc-matcher.h"
 #define MONGOLITE_LIB "mongolite"
 
 /* ============================================================
@@ -121,8 +122,34 @@ typedef struct {
 } delete_info_t;
 
 /* ============================================================
- * Delete many documents
+ * Delete many documents - Using wtree3_delete_if_txn
  * ============================================================ */
+
+/* Context for delete predicate callback */
+typedef struct {
+    mongoc_matcher_t *matcher;
+} delete_many_ctx_t;
+
+/* Predicate callback: returns true to delete matching documents */
+static bool _delete_many_predicate(const void *key, size_t key_len,
+                                   const void *value, size_t value_len,
+                                   void *user_data) {
+    (void)key; (void)key_len;  /* Unused */
+    delete_many_ctx_t *ctx = (delete_many_ctx_t*)user_data;
+
+    /* Parse document */
+    bson_t doc;
+    if (MONGOLITE_UNLIKELY(!bson_init_static(&doc, value, value_len))) {
+        return false;  /* Don't delete on parse error */
+    }
+
+    /* Check if matches filter */
+    if (ctx->matcher) {
+        return mongoc_matcher_match(ctx->matcher, &doc);
+    }
+
+    return true;  /* No filter = delete all */
+}
 
 MONGOLITE_HOT
 int mongolite_delete_many(mongolite_db_t *db, const char *collection,
@@ -151,79 +178,29 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Create cursor using the existing transaction (avoids deadlock) */
-    mongolite_cursor_t *cursor = _mongolite_cursor_create_with_txn(db, tree, collection,
-                                                                    txn, filter, error);
-    if (MONGOLITE_UNLIKELY(!cursor)) {
-        _mongolite_abort_if_auto(db, txn);
-        _mongolite_unlock(db);
-        return -1;
-    }
-
-    /* Collect all document IDs to delete (wtree3 handles index maintenance) */
-    delete_info_t *docs = NULL;
-    size_t n_docs = 0;
-    size_t docs_capacity = 16;
-
-    docs = malloc(sizeof(delete_info_t) * docs_capacity);
-    if (MONGOLITE_UNLIKELY(!docs)) {
-        mongolite_cursor_destroy(cursor);
-        _mongolite_abort_if_auto(db, txn);
-        _mongolite_unlock(db);
-        set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
-        return -1;
-    }
-
-    const bson_t *doc;
-    bson_oid_t oid;
-    while (MONGOLITE_LIKELY(mongolite_cursor_next(cursor, &doc))) {
-        /* Extract _id - skip documents without valid OID */
-        EXTRACT_OID_OR_CONTINUE(doc, oid);
-
-        /* Expand array if needed */
-        if (MONGOLITE_UNLIKELY(n_docs >= docs_capacity)) {
-            docs_capacity *= 2;
-            delete_info_t *new_docs = realloc(docs, sizeof(delete_info_t) * docs_capacity);
-            if (MONGOLITE_UNLIKELY(!new_docs)) {
-                free(docs);
-                mongolite_cursor_destroy(cursor);
-                _mongolite_abort_if_auto(db, txn);
-                _mongolite_unlock(db);
-                set_error(error, "system", MONGOLITE_ENOMEM, "Out of memory");
-                return -1;
-            }
-            docs = new_docs;
-        }
-
-        bson_oid_copy(&oid, &docs[n_docs].id);
-        n_docs++;
-    }
-
-    mongolite_cursor_destroy(cursor);
-
-    /* Now delete all collected documents via wtree3 (indexes maintained automatically) */
-    int64_t count = 0;
-    int rc = 0;
-
-    for (size_t i = 0; i < n_docs; i++) {
-        /* Delete the document via wtree3 (indexes maintained automatically) */
-        bool deleted = false;
-        rc = wtree3_delete_one_txn(txn, tree,
-                                    docs[i].id.bytes, sizeof(docs[i].id.bytes),
-                                    &deleted, error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            free(docs);
+    /* Create matcher if we have a filter */
+    mongoc_matcher_t *matcher = NULL;
+    if (filter && !bson_empty(filter)) {
+        bson_error_t bson_err;
+        matcher = mongoc_matcher_new(filter, &bson_err);
+        if (MONGOLITE_UNLIKELY(!matcher)) {
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
+            set_error(error, "bsonmatch", MONGOLITE_EQUERY,
+                     "Invalid query: %s", bson_err.message);
             return -1;
-        }
-
-        if (deleted) {
-            count++;
         }
     }
 
-    free(docs);
+    /* Single-pass delete using wtree3_delete_if_txn - indexes maintained automatically */
+    delete_many_ctx_t ctx = { .matcher = matcher };
+    size_t count = 0;
+    int rc = wtree3_delete_if_txn(txn, tree, NULL, 0, NULL, 0,
+                                   _delete_many_predicate, &ctx, &count, error);
+
+    if (matcher) {
+        mongoc_matcher_destroy(matcher);
+    }
 
     /* Update doc count within the same transaction for atomicity */
     if (MONGOLITE_LIKELY(count > 0)) {

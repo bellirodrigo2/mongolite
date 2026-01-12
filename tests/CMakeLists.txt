@@ -23,6 +23,7 @@ set(TEST_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 # Common include directories
 set(TEST_INCLUDE_DIRS
     ${SRC_DIR}
+    ${SRC_DIR}/wtree3
     ${LMDB_DIR}
     ${BSONMATCH_DIR}/src
     ${MONGOC_INSTALL_DIR}/include/bson-2.3.0

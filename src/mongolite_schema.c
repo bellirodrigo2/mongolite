@@ -21,11 +21,9 @@ void _mongolite_schema_entry_free(mongolite_schema_entry_t *entry) {
     free(entry->name);
     free(entry->tree_name);
     free(entry->type);
-    free(entry->collection_name);
-    if (entry->indexes) bson_destroy(entry->indexes);
     if (entry->options) bson_destroy(entry->options);
     if (entry->metadata) bson_destroy(entry->metadata);
-    if (entry->keys) bson_destroy(entry->keys);
+    /* Note: index fields removed - managed by wtree3 */
     memset(entry, 0, sizeof(*entry));
 }
 
@@ -51,25 +49,8 @@ bson_t* _mongolite_schema_entry_to_bson(const mongolite_schema_entry_t *entry) {
     BSON_APPEND_DATE_TIME(doc, SCHEMA_FIELD_CREATED_AT, entry->created_at);
     BSON_APPEND_DATE_TIME(doc, SCHEMA_FIELD_MODIFIED_AT, entry->modified_at);
 
-    /* Collection-specific */
-    if (entry->type && strcmp(entry->type, SCHEMA_TYPE_COLLECTION) == 0) {
-        BSON_APPEND_INT64(doc, SCHEMA_FIELD_DOC_COUNT, entry->doc_count);
-        if (entry->indexes) {
-            BSON_APPEND_ARRAY(doc, SCHEMA_FIELD_INDEXES, entry->indexes);
-        }
-    }
-
-    /* Index-specific */
-    if (entry->type && strcmp(entry->type, SCHEMA_TYPE_INDEX) == 0) {
-        if (entry->collection_name) {
-            BSON_APPEND_UTF8(doc, "collection", entry->collection_name);
-        }
-        if (entry->keys) {
-            BSON_APPEND_DOCUMENT(doc, "keys", entry->keys);
-        }
-        BSON_APPEND_BOOL(doc, "unique", entry->unique);
-        BSON_APPEND_BOOL(doc, "sparse", entry->sparse);
-    }
+    /* Collection fields (all entries are collections now) */
+    BSON_APPEND_INT64(doc, SCHEMA_FIELD_DOC_COUNT, entry->doc_count);
 
     /* Optional metadata */
     if (entry->options) {
@@ -78,6 +59,8 @@ bson_t* _mongolite_schema_entry_to_bson(const mongolite_schema_entry_t *entry) {
     if (entry->metadata) {
         BSON_APPEND_DOCUMENT(doc, SCHEMA_FIELD_METADATA, entry->metadata);
     }
+
+    /* Note: Index-specific fields removed - wtree3 handles index persistence */
 
     return doc;
 }
@@ -128,15 +111,6 @@ int _mongolite_schema_entry_from_bson(const bson_t *doc,
         entry->doc_count = bson_iter_int64(&iter);
     }
 
-    /* Index array for collections */
-    if (bson_iter_init_find(&iter, doc, SCHEMA_FIELD_INDEXES) &&
-        BSON_ITER_HOLDS_ARRAY(&iter)) {
-        uint32_t len;
-        const uint8_t *data;
-        bson_iter_array(&iter, &len, &data);
-        entry->indexes = bson_new_from_data(data, len);
-    }
-
     /* Options document */
     if (bson_iter_init_find(&iter, doc, SCHEMA_FIELD_OPTIONS) &&
         BSON_ITER_HOLDS_DOCUMENT(&iter)) {
@@ -155,29 +129,8 @@ int _mongolite_schema_entry_from_bson(const bson_t *doc,
         entry->metadata = bson_new_from_data(data, len);
     }
 
-    /* Index-specific fields */
-    if (bson_iter_init_find(&iter, doc, "collection") &&
-        BSON_ITER_HOLDS_UTF8(&iter)) {
-        entry->collection_name = strdup(bson_iter_utf8(&iter, NULL));
-    }
-
-    if (bson_iter_init_find(&iter, doc, "keys") &&
-        BSON_ITER_HOLDS_DOCUMENT(&iter)) {
-        uint32_t len;
-        const uint8_t *data;
-        bson_iter_document(&iter, &len, &data);
-        entry->keys = bson_new_from_data(data, len);
-    }
-
-    if (bson_iter_init_find(&iter, doc, "unique") &&
-        BSON_ITER_HOLDS_BOOL(&iter)) {
-        entry->unique = bson_iter_bool(&iter);
-    }
-
-    if (bson_iter_init_find(&iter, doc, "sparse") &&
-        BSON_ITER_HOLDS_BOOL(&iter)) {
-        entry->sparse = bson_iter_bool(&iter);
-    }
+    /* Note: Index fields removed - wtree3 handles index persistence */
+    /* Ignore legacy "indexes" array if present in old databases */
 
     return MONGOLITE_OK;
 }

@@ -17,13 +17,6 @@
 
 #define MONGOLITE_LIB "mongolite"
 
-/* Cleanup callback for bson_t* stored as user_data in wtree3 indexes */
-static void bson_user_data_cleanup(void *user_data) {
-    if (user_data) {
-        bson_destroy((bson_t*)user_data);
-    }
-}
-
 /* ============================================================
  * Index Name Generation
  *
@@ -402,105 +395,8 @@ int _mongolite_index_compare(const MDB_val *a, const MDB_val *b) {
     return _index_key_compare(a->mv_data, a->mv_size, b->mv_data, b->mv_size, NULL);
 }
 
-/*
- * Check if an index with given name already exists on collection
- */
-static bool _index_exists(const bson_t *indexes, const char *name) {
-    if (!indexes || !name) return false;
-
-    bson_iter_t iter;
-    if (!bson_iter_init(&iter, indexes)) return false;
-
-    while (bson_iter_next(&iter)) {
-        if (BSON_ITER_HOLDS_DOCUMENT(&iter)) {
-            bson_iter_t child;
-            if (bson_iter_recurse(&iter, &child) &&
-                bson_iter_find(&child, "name") &&
-                BSON_ITER_HOLDS_UTF8(&child)) {
-                if (strcmp(bson_iter_utf8(&child, NULL), name) == 0) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
-
-/*
- * Add index spec to collection's indexes array
- */
-static bson_t* _add_index_to_array(const bson_t *existing, const bson_t *new_spec) {
-    bson_t *result = bson_new();
-    if (!result) return NULL;
-
-    int idx = 0;
-    char idx_str[16];
-
-    /* Copy existing indexes */
-    if (existing) {
-        bson_iter_t iter;
-        if (bson_iter_init(&iter, existing)) {
-            while (bson_iter_next(&iter)) {
-                if (BSON_ITER_HOLDS_DOCUMENT(&iter)) {
-                    uint32_t len;
-                    const uint8_t *data;
-                    bson_iter_document(&iter, &len, &data);
-                    bson_t child;
-                    bson_init_static(&child, data, len);
-
-                    snprintf(idx_str, sizeof(idx_str), "%d", idx++);
-                    bson_append_document(result, idx_str, -1, &child);
-                }
-            }
-        }
-    }
-
-    /* Add new index */
-    snprintf(idx_str, sizeof(idx_str), "%d", idx);
-    bson_append_document(result, idx_str, -1, new_spec);
-
-    return result;
-}
-
-/*
- * Remove index from collection's indexes array by name
- */
-static bson_t* _remove_index_from_array(const bson_t *existing, const char *name) {
-    if (!existing || !name) return NULL;
-
-    bson_t *result = bson_new();
-    if (!result) return NULL;
-
-    int idx = 0;
-    char idx_str[16];
-
-    bson_iter_t iter;
-    if (bson_iter_init(&iter, existing)) {
-        while (bson_iter_next(&iter)) {
-            if (BSON_ITER_HOLDS_DOCUMENT(&iter)) {
-                uint32_t len;
-                const uint8_t *data;
-                bson_iter_document(&iter, &len, &data);
-                bson_t child;
-                bson_init_static(&child, data, len);
-
-                /* Check if this is the index to remove */
-                bson_iter_t name_iter;
-                if (bson_iter_init_find(&name_iter, &child, "name") &&
-                    BSON_ITER_HOLDS_UTF8(&name_iter)) {
-                    if (strcmp(bson_iter_utf8(&name_iter, NULL), name) == 0) {
-                        continue;  /* Skip this index */
-                    }
-                }
-
-                snprintf(idx_str, sizeof(idx_str), "%d", idx++);
-                bson_append_document(result, idx_str, -1, &child);
-            }
-        }
-    }
-
-    return result;
-}
+/* Note: Index array helper functions (_index_exists, _add_index_to_array,
+ * _remove_index_from_array) removed - wtree3 handles all index metadata directly */
 
 /*
  * mongolite_create_index - Create an index on a collection
@@ -528,9 +424,7 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
 
     int rc = MONGOLITE_OK;
     char *index_name = NULL;
-    bson_t *keys_copy = NULL;
-    bson_t *index_spec = NULL;
-    bson_t *new_indexes = NULL;
+    void *keys_data_copy = NULL;
 
     _mongolite_lock(db);
 
@@ -563,15 +457,6 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
         goto cleanup;
     }
 
-    /* Check if index already exists */
-    if (_index_exists(col_entry.indexes, index_name)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EEXISTS,
-                 "Index '%s' already exists on collection '%s'", index_name, collection);
-        rc = MONGOLITE_EEXISTS;
-        _mongolite_schema_entry_free(&col_entry);
-        goto cleanup;
-    }
-
     /* Get collection tree (wtree3) */
     wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
@@ -580,97 +465,83 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
         goto cleanup;
     }
 
-    /* Copy keys for use as user_data in callback (wtree3 stores this) */
-    keys_copy = bson_copy(keys);
-    if (!keys_copy) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
-                 "Failed to copy index keys");
-        rc = MONGOLITE_ENOMEM;
+    /* Check if index already exists (query wtree3 directly) */
+    if (wtree3_tree_has_index(tree, index_name)) {
+        set_error(error, MONGOLITE_LIB, MONGOLITE_EEXISTS,
+                 "Index '%s' already exists on collection '%s'", index_name, collection);
+        rc = MONGOLITE_EEXISTS;
         _mongolite_schema_entry_free(&col_entry);
         goto cleanup;
     }
 
-    /* Configure index for wtree3 */
+    /* Serialize keys for wtree3 user_data (will be persisted automatically) */
+    const uint8_t *keys_data = bson_get_data(keys);
+    size_t keys_len = keys->len;
+
+    keys_data_copy = malloc(keys_len);
+    if (!keys_data_copy) {
+        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
+                 "Failed to allocate index keys");
+        rc = MONGOLITE_ENOMEM;
+        _mongolite_schema_entry_free(&col_entry);
+        goto cleanup;
+    }
+    memcpy(keys_data_copy, keys_data, keys_len);
+
+    /* Configure index for wtree3 (new extractor registry system) */
     bool is_unique = config && config->unique;
     bool is_sparse = config && config->sparse;
 
     wtree3_index_config_t idx_config = {
         .name = index_name,
-        .key_fn = is_sparse ? bson_index_key_extractor_sparse : bson_index_key_extractor,
-        .user_data = keys_copy,
-        .user_data_cleanup = bson_user_data_cleanup,
+        .user_data = keys_data_copy,        /* Raw BSON bytes */
+        .user_data_len = keys_len,          /* Length for persistence */
         .unique = is_unique,
         .sparse = is_sparse,
-        .compare = _mongolite_index_compare
+        .compare = _mongolite_index_compare,
+        .dupsort_compare = NULL             /* Use default */
     };
+    /* Note: key_fn is looked up from registry using version+flags */
 
     /* Register index with wtree3 */
     rc = wtree3_tree_add_index(tree, &idx_config, error);
     if (rc != 0) {
-        bson_destroy(keys_copy);
-        keys_copy = NULL;
+        free(keys_data_copy);
+        keys_data_copy = NULL;
         _mongolite_schema_entry_free(&col_entry);
         rc = _mongolite_translate_wtree3_error(rc);
         goto cleanup;
     }
 
+    /* keys_data_copy ownership transferred to wtree3, set to NULL to avoid double-free */
+    keys_data_copy = NULL;
+
     /* Populate index from existing documents */
     rc = wtree3_tree_populate_index(tree, index_name, error);
     if (rc != 0) {
-        /* Drop the partially created index (cleanup callback frees keys_copy) */
+        /* Drop the partially created index (wtree3 will free user_data) */
         wtree3_tree_drop_index(tree, index_name, NULL);
-        keys_copy = NULL;  /* Already freed by cleanup callback */
         _mongolite_schema_entry_free(&col_entry);
         /* Translate wtree3 error codes to mongolite error codes */
         rc = _mongolite_translate_wtree3_error(rc);
         goto cleanup;
     }
 
-    /* Create index spec for schema */
-    index_spec = _index_spec_to_bson(index_name, keys, config);
-    if (!index_spec) {
-        wtree3_tree_drop_index(tree, index_name, NULL);
-        keys_copy = NULL;  /* Already freed by cleanup callback */
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
-                 "Failed to create index spec");
-        rc = MONGOLITE_ENOMEM;
-        _mongolite_schema_entry_free(&col_entry);
-        goto cleanup;
-    }
-
-    /* Add index to collection's indexes array */
-    new_indexes = _add_index_to_array(col_entry.indexes, index_spec);
-    if (!new_indexes) {
-        wtree3_tree_drop_index(tree, index_name, NULL);
-        keys_copy = NULL;  /* Already freed by cleanup callback */
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
-                 "Failed to update indexes array");
-        rc = MONGOLITE_ENOMEM;
-        _mongolite_schema_entry_free(&col_entry);
-        goto cleanup;
-    }
-
-    /* Update collection schema */
-    if (col_entry.indexes) {
-        bson_destroy(col_entry.indexes);
-    }
-    col_entry.indexes = new_indexes;
-    new_indexes = NULL;  /* Ownership transferred */
+    /* Update collection modified timestamp */
+    /* Note: Index metadata is now fully managed by wtree3's persistence system */
     col_entry.modified_at = _mongolite_now_ms();
 
     rc = _mongolite_schema_put(db, &col_entry, error);
     if (rc != 0) {
         wtree3_tree_drop_index(tree, index_name, NULL);
-        bson_destroy(keys_copy);
-        keys_copy = NULL;
         _mongolite_schema_entry_free(&col_entry);
         goto cleanup;
     }
 
     _mongolite_schema_entry_free(&col_entry);
 
-    /* Note: keys_copy ownership is transferred to wtree3 - do not free */
-    keys_copy = NULL;
+    /* Note: keys_data_copy ownership is transferred to wtree3 - do not free */
+    keys_data_copy = NULL;
 
     /* Invalidate index cache so it gets reloaded with new index */
     _mongolite_invalidate_index_cache(db, collection);
@@ -679,9 +550,7 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
 
 cleanup:
     free(index_name);
-    if (keys_copy) bson_destroy(keys_copy);
-    if (index_spec) bson_destroy(index_spec);
-    if (new_indexes) bson_destroy(new_indexes);
+    if (keys_data_copy) free(keys_data_copy);  /* Raw bytes, not bson_t* */
     _mongolite_unlock(db);
     return rc;
 }
@@ -709,7 +578,6 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
     }
 
     int rc = MONGOLITE_OK;
-    bson_t *new_indexes = NULL;
 
     _mongolite_lock(db);
 
@@ -730,15 +598,6 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
         return MONGOLITE_EINVAL;
     }
 
-    /* Check if index exists in schema */
-    if (!_index_exists(col_entry.indexes, index_name)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOTFOUND,
-                 "Index '%s' not found on collection '%s'", index_name, collection);
-        _mongolite_schema_entry_free(&col_entry);
-        _mongolite_unlock(db);
-        return MONGOLITE_ENOTFOUND;
-    }
-
     /* Get collection tree (wtree3) */
     wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
@@ -747,7 +606,16 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
         return MONGOLITE_ERROR;
     }
 
-    /* Drop index via wtree3 */
+    /* Check if index exists (query wtree3 directly) */
+    if (!wtree3_tree_has_index(tree, index_name)) {
+        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOTFOUND,
+                 "Index '%s' not found on collection '%s'", index_name, collection);
+        _mongolite_schema_entry_free(&col_entry);
+        _mongolite_unlock(db);
+        return MONGOLITE_ENOTFOUND;
+    }
+
+    /* Drop index via wtree3 (also removes from persistence) */
     rc = wtree3_tree_drop_index(tree, index_name, error);
     if (rc != 0 && rc != WTREE3_NOT_FOUND) {
         _mongolite_schema_entry_free(&col_entry);
@@ -755,21 +623,8 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
         return rc;
     }
 
-    /* Remove index from collection's indexes array */
-    new_indexes = _remove_index_from_array(col_entry.indexes, index_name);
-    if (!new_indexes) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
-                 "Failed to update indexes array");
-        _mongolite_schema_entry_free(&col_entry);
-        _mongolite_unlock(db);
-        return MONGOLITE_ENOMEM;
-    }
-
-    /* Update collection schema */
-    if (col_entry.indexes) {
-        bson_destroy(col_entry.indexes);
-    }
-    col_entry.indexes = new_indexes;
+    /* Update collection modified timestamp */
+    /* Note: Index metadata removal handled by wtree3 */
     col_entry.modified_at = _mongolite_now_ms();
 
     rc = _mongolite_schema_put(db, &col_entry, error);

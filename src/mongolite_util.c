@@ -145,19 +145,6 @@ char* _mongolite_collection_tree_name(const char *collection_name) {
     return tree_name;
 }
 
-char* _mongolite_index_tree_name(const char *collection_name, const char *index_name) {
-    if (!collection_name || !index_name) return NULL;
-    size_t prefix_len = strlen(MONGOLITE_IDX_PREFIX);
-    size_t col_len = strlen(collection_name);
-    size_t idx_len = strlen(index_name);
-    /* Format: idx:collection:index_name */
-    size_t total_len = prefix_len + col_len + 1 + idx_len + 1;
-    char *tree_name = malloc(total_len);
-    if (!tree_name) return NULL;
-    snprintf(tree_name, total_len, "%s%s:%s", MONGOLITE_IDX_PREFIX, collection_name, index_name);
-    return tree_name;
-}
-
 /* ============================================================
  * Tree Cache Operations
  * ============================================================ */
@@ -319,97 +306,66 @@ mongolite_cached_index_t* _mongolite_get_cached_indexes(mongolite_db_t *db,
         return entry->indexes;
     }
 
-    /* Load indexes from schema */
-    mongolite_schema_entry_t schema = {0};
-    int rc = _mongolite_schema_get(db, collection, &schema, error);
-    if (rc != 0) {
+    /* Load indexes from wtree3 */
+    wtree3_index_info_t *wtree_indexes = NULL;
+    size_t wtree_count = 0;
+    
+    if (wtree3_tree_list_indexes(entry->tree, &wtree_indexes, &wtree_count, error) != 0) {
         *out_count = 0;
         return NULL;
     }
 
-    /* Count indexes (excluding _id_) */
-    size_t count = 0;
-    if (schema.indexes) {
-        bson_iter_t iter;
-        if (bson_iter_init(&iter, schema.indexes)) {
-            while (bson_iter_next(&iter)) {
-                if (BSON_ITER_HOLDS_DOCUMENT(&iter)) {
-                    bson_iter_t child;
-                    if (bson_iter_recurse(&iter, &child) &&
-                        bson_iter_find(&child, "name") &&
-                        BSON_ITER_HOLDS_UTF8(&child)) {
-                        const char *idx_name = bson_iter_utf8(&child, NULL);
-                        if (strcmp(idx_name, "_id_") != 0) {
-                            count++;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (count == 0) {
+    if (wtree_count == 0) {
         entry->indexes = NULL;
         entry->index_count = 0;
         entry->indexes_loaded = true;
-        _mongolite_schema_entry_free(&schema);
         *out_count = 0;
         return NULL;
     }
 
-    /* Allocate cached indexes array */
-    entry->indexes = calloc(count, sizeof(mongolite_cached_index_t));
-    if (!entry->indexes) {
-        _mongolite_schema_entry_free(&schema);
-        *out_count = 0;
-        return NULL;
-    }
-
-    /* Populate cached index specs (no tree handles - wtree3 manages those) */
-    size_t idx = 0;
-    bson_iter_t iter;
-    if (bson_iter_init(&iter, schema.indexes)) {
-        while (bson_iter_next(&iter) && idx < count) {
-            if (!BSON_ITER_HOLDS_DOCUMENT(&iter)) continue;
-
-            uint32_t doc_len;
-            const uint8_t *doc_data;
-            bson_iter_document(&iter, &doc_len, &doc_data);
-
-            bson_t spec;
-            if (!bson_init_static(&spec, doc_data, doc_len)) continue;
-
-            char *name = NULL;
-            bson_t *keys = NULL;
-            index_config_t config = {0};
-
-            if (_index_spec_from_bson(&spec, &name, &keys, &config) == 0 && name && keys) {
-                /* Skip _id_ index */
-                if (strcmp(name, "_id_") == 0) {
-                    free(name);
-                    bson_destroy(keys);
-                    continue;
-                }
-
-                /* Just store the spec - wtree3 manages the actual index tree */
-                entry->indexes[idx].name = name;
-                entry->indexes[idx].keys = keys;
-                entry->indexes[idx].unique = config.unique;
-                entry->indexes[idx].sparse = config.sparse;
-                idx++;
-            } else {
-                free(name);
-                if (keys) bson_destroy(keys);
-            }
+    /* Allocate cache array */
+    mongolite_cached_index_t *cached = calloc(wtree_count, sizeof(mongolite_cached_index_t));
+    if (!cached) {
+        /* Free wtree indexes */
+        for (size_t i = 0; i < wtree_count; i++) {
+            free(wtree_indexes[i].name);
+            free(wtree_indexes[i].user_data);
         }
+        free(wtree_indexes);
+        set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate index cache");
+        *out_count = 0;
+        return NULL;
     }
 
-    entry->index_count = idx;
-    entry->indexes_loaded = true;
-    _mongolite_schema_entry_free(&schema);
+    /* Convert wtree3_index_info_t to mongolite_cached_index_t */
+    for (size_t i = 0; i < wtree_count; i++) {
+        cached[i].name = wtree_indexes[i].name;  /* Transfer ownership */
+        cached[i].unique = wtree_indexes[i].unique;
+        cached[i].sparse = wtree_indexes[i].sparse;
+        cached[i].dbi = wtree_indexes[i].dbi;
 
-    *out_count = entry->index_count;
-    return entry->indexes;
+        /* Parse BSON keys from user_data */
+        if (wtree_indexes[i].user_data && wtree_indexes[i].user_data_len > 0) {
+            bson_t bson_keys;
+            if (bson_init_static(&bson_keys, wtree_indexes[i].user_data, wtree_indexes[i].user_data_len)) {
+                cached[i].keys = bson_copy(&bson_keys);
+            } else {
+                cached[i].keys = NULL;
+            }
+        } else {
+            cached[i].keys = NULL;
+        }
+
+        free(wtree_indexes[i].user_data);  /* Free user_data, we copied it */
+    }
+    free(wtree_indexes);
+
+    entry->indexes = cached;
+    entry->index_count = wtree_count;
+    entry->indexes_loaded = true;
+
+    *out_count = wtree_count;
+    return cached;
 }
 
 /*

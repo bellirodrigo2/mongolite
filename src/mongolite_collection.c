@@ -74,17 +74,8 @@ int mongolite_collection_create(mongolite_db_t *db, const char *name,
     entry.modified_at = entry.created_at;
     entry.doc_count = 0;
 
-    /* Create default _id index info */
-    entry.indexes = bson_new();
-    bson_t idx_doc;
-    BSON_APPEND_DOCUMENT_BEGIN(entry.indexes, "0", &idx_doc);
-    BSON_APPEND_UTF8(&idx_doc, "name", "_id_");
-    bson_t keys;
-    BSON_APPEND_DOCUMENT_BEGIN(&idx_doc, "keys", &keys);
-    BSON_APPEND_INT32(&keys, "_id", 1);
-    bson_append_document_end(&idx_doc, &keys);
-    BSON_APPEND_BOOL(&idx_doc, "unique", true);
-    bson_append_document_end(entry.indexes, &idx_doc);
+    /* Note: _id index is implicit - wtree3 uses the main tree key as _id */
+    /* Index metadata now fully managed by wtree3's index persistence system */
 
     /* Copy options from config */
     if (config) {
@@ -163,32 +154,8 @@ int mongolite_collection_drop(mongolite_db_t *db, const char *name, gerror_t *er
         return rc;
     }
 
-    /* Note: wtree3 now manages index trees internally.
-     * We still clean up the old-style index trees for backward compatibility */
-    if (entry.indexes) {
-        bson_iter_t iter;
-        if (bson_iter_init(&iter, entry.indexes)) {
-            while (bson_iter_next(&iter)) {
-                if (BSON_ITER_HOLDS_DOCUMENT(&iter)) {
-                    bson_iter_t child;
-                    if (bson_iter_recurse(&iter, &child) &&
-                        bson_iter_find(&child, "name") &&
-                        BSON_ITER_HOLDS_UTF8(&child)) {
-                        const char *index_name = bson_iter_utf8(&child, NULL);
-                        /* Skip _id index (no separate tree) */
-                        if (strcmp(index_name, "_id_") != 0) {
-                            char *index_tree_name = _mongolite_index_tree_name(name, index_name);
-                            if (index_tree_name) {
-                                /* Try to delete any index trees */
-                                wtree3_tree_delete(db->wdb, index_tree_name, NULL);
-                                free(index_tree_name);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    /* Note: wtree3 manages all index cleanup automatically when tree is deleted */
+    /* No need to manually delete index trees */
 
     /* Delete schema entry */
     rc = _mongolite_schema_delete(db, name, error);
@@ -409,36 +376,58 @@ static int _load_indexes_from_schema(wtree3_tree_t *tree, const bson_t *indexes,
             continue;
         }
 
-        /* Copy keys for use as user_data (wtree3 stores this reference) */
-        bson_t *keys_copy = bson_copy(idx_keys);
-        bson_destroy(idx_keys);
-        if (!keys_copy) {
+        /* Note: With new wtree3, indexes are automatically loaded from persistence
+         * during wtree3_tree_open() if metadata exists. We only need to handle
+         * the case where an index exists in the schema but not in wtree3 metadata
+         * (e.g., after migration from old version). */
+
+        /* Check if index is already loaded by wtree3 */
+        if (wtree3_tree_has_index(tree, idx_name)) {
+            /* Index already loaded from metadata, nothing to do */
             free(idx_name);
+            bson_destroy(idx_keys);
             continue;
         }
 
-        /* Configure index for wtree3 */
+        /* Index exists in schema but not loaded - recreate it */
+        /* Serialize keys for wtree3 user_data */
+        const uint8_t *keys_data = bson_get_data(idx_keys);
+        size_t keys_len = idx_keys->len;
+
+        void *keys_copy = malloc(keys_len);
+        if (!keys_copy) {
+            free(idx_name);
+            bson_destroy(idx_keys);
+            continue;
+        }
+        memcpy(keys_copy, keys_data, keys_len);
+
+        /* Configure index for wtree3 (new extractor registry system) */
         wtree3_index_config_t wtree3_config = {
             .name = idx_name,
-            .key_fn = idx_config.sparse ? bson_index_key_extractor_sparse : bson_index_key_extractor,
             .user_data = keys_copy,
-            .user_data_cleanup = bson_user_data_cleanup,
+            .user_data_len = keys_len,
             .unique = idx_config.unique,
             .sparse = idx_config.sparse,
-            .compare = _mongolite_index_compare
+            .compare = _mongolite_index_compare,
+            .dupsort_compare = NULL
         };
 
-        /* Register index with wtree3 (no population - data already exists) */
+        /* Register index with wtree3 */
         rc = wtree3_tree_add_index(tree, &wtree3_config, error);
 
-        free(idx_name);
-
         if (rc != WTREE3_OK && rc != WTREE3_KEY_EXISTS) {
-            /* Index registration failed - free the keys copy we made */
-            bson_destroy(keys_copy);
+            /* Index registration failed */
+            free(keys_copy);
+            free(idx_name);
+            bson_destroy(idx_keys);
             /* Continue trying other indexes - log error but don't fail */
+            continue;
         }
         /* Note: keys_copy ownership transferred to wtree3 on success */
+
+        free(idx_name);
+        bson_destroy(idx_keys);
     }
 
     return MONGOLITE_OK;
@@ -469,17 +458,11 @@ wtree3_tree_t* _mongolite_get_collection_tree(mongolite_db_t *db, const char *na
     }
 
     /* Open the tree with wtree3 (index-aware), using doc_count from schema */
+    /* Note: wtree3 automatically loads all indexes from its metadata database */
     tree = wtree3_tree_open(db->wdb, entry.tree_name, 0, entry.doc_count, error);
     if (!tree) {
         _mongolite_schema_entry_free(&entry);
         return NULL;
-    }
-
-    /* Load indexes from schema into wtree3 for automatic maintenance */
-    rc = _load_indexes_from_schema(tree, entry.indexes, error);
-    if (rc != MONGOLITE_OK) {
-        /* Index loading failed - but tree is still usable */
-        /* Just log and continue (indexes won't be maintained) */
     }
 
     /* Cache it */

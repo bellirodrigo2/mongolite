@@ -12,6 +12,7 @@
  */
 
 #include "mongolite_internal.h"
+#include "key_compare.h"
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -73,8 +74,11 @@ int mongolite_open(const char *filename, mongolite_db_t **db,
 
     unsigned int lmdb_flags = config ? config->lmdb_flags : 0;
 
+    /* Schema version for wtree3 extractors */
+    uint32_t version = WTREE3_VERSION(1, 0);
+
     /* Open LMDB environment via wtree3 */
-    new_db->wdb = wtree3_db_open(filename, max_bytes, max_dbs, lmdb_flags, error);
+    new_db->wdb = wtree3_db_open(filename, max_bytes, max_dbs, version, lmdb_flags, error);
     if (!new_db->wdb) {
         free(new_db);
         return MONGOLITE_ERROR;
@@ -83,9 +87,48 @@ int mongolite_open(const char *filename, mongolite_db_t **db,
     new_db->path = strdup(filename);
     new_db->max_bytes = max_bytes;
     new_db->max_dbs = max_dbs;
+    new_db->version = version;
+
+    /* Register BSON key extractors for indexes */
+    /* Flags: 0x00 = non-unique, non-sparse; 0x01 = unique; 0x02 = sparse; 0x03 = unique+sparse */
+    int rc = wtree3_db_register_key_extractor(new_db->wdb, version, 0x00,
+                                          bson_index_key_extractor, error);
+    if (rc != 0) {
+        wtree3_db_close(new_db->wdb);
+        free(new_db->path);
+        free(new_db);
+        return rc;
+    }
+
+    rc = wtree3_db_register_key_extractor(new_db->wdb, version, 0x01,
+                                          bson_index_key_extractor, error);
+    if (rc != 0) {
+        wtree3_db_close(new_db->wdb);
+        free(new_db->path);
+        free(new_db);
+        return rc;
+    }
+
+    rc = wtree3_db_register_key_extractor(new_db->wdb, version, 0x02,
+                                          bson_index_key_extractor_sparse, error);
+    if (rc != 0) {
+        wtree3_db_close(new_db->wdb);
+        free(new_db->path);
+        free(new_db);
+        return rc;
+    }
+
+    rc = wtree3_db_register_key_extractor(new_db->wdb, version, 0x03,
+                                          bson_index_key_extractor_sparse, error);
+    if (rc != 0) {
+        wtree3_db_close(new_db->wdb);
+        free(new_db->path);
+        free(new_db);
+        return rc;
+    }
 
     /* Initialize mutex */
-    int rc = _mongolite_lock_init(new_db);
+    rc = _mongolite_lock_init(new_db);
     if (rc != 0) {
         wtree3_db_close(new_db->wdb);
         free(new_db->path);

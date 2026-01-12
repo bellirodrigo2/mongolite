@@ -192,6 +192,15 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
 int mongolite_replace_one_json(mongolite_db_t *db, const char *collection,
                          const char *filter_json, const char *replacement_json,
                          bool upsert, gerror_t *error);
+
+// Find and modify (atomic operations)
+bson_t* mongolite_find_and_modify(mongolite_db_t *db, const char *collection,
+                                  const bson_t *filter, const bson_t *update,
+                                  bool return_new, bool upsert, gerror_t *error);
+bson_t* mongolite_find_and_modify_json(mongolite_db_t *db, const char *collection,
+                                       const char *filter_json, const char *update_json,
+                                       bool return_new, bool upsert, gerror_t *error);
+
 // Delete
 int mongolite_delete_one(mongolite_db_t *db, const char *collection,
                          const bson_t *filter, gerror_t *error);

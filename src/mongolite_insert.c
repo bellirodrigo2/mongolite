@@ -295,26 +295,46 @@ retry_insert_many:
             return MONGOLITE_ERROR;
         }
 
-        /* Track documents that need cleanup */
+        /* Prepare batch insert using wtree3_insert_many_txn for better performance */
+        wtree3_kv_t *kvs = calloc(n_docs, sizeof(wtree3_kv_t));
         bson_t **generated_docs = calloc(n_docs, sizeof(bson_t*));
-        if (MONGOLITE_UNLIKELY(!generated_docs)) {
+        bson_oid_t *temp_oids = NULL;  /* For when oids array not provided */
+
+        if (MONGOLITE_UNLIKELY(!kvs || !generated_docs)) {
             _mongolite_abort_if_auto(db, txn);
+            free(kvs);
+            free(generated_docs);
             free(oids);
             _mongolite_unlock(db);
             set_error(error, "system", MONGOLITE_ENOMEM,
-                     "Failed to allocate tracking array");
+                     "Failed to allocate batch arrays");
             return MONGOLITE_ENOMEM;
+        }
+
+        /* Allocate temp OID storage if not saving inserted_ids */
+        if (!oids) {
+            temp_oids = calloc(n_docs, sizeof(bson_oid_t));
+            if (MONGOLITE_UNLIKELY(!temp_oids)) {
+                _mongolite_abort_if_auto(db, txn);
+                free(kvs);
+                free(generated_docs);
+                _mongolite_unlock(db);
+                set_error(error, "system", MONGOLITE_ENOMEM,
+                         "Failed to allocate temp OID array");
+                return MONGOLITE_ENOMEM;
+            }
         }
 
         size_t inserted = 0;
         rc = MONGOLITE_OK;
 
+        /* Prepare all documents with _id */
         for (size_t i = 0; i < n_docs; i++) {
             if (MONGOLITE_UNLIKELY(!docs[i])) continue;
 
-            bson_oid_t oid;
+            bson_oid_t *oid_ptr = oids ? &oids[inserted] : &temp_oids[inserted];
             bool id_generated = false;
-            bson_t *final_doc = _ensure_id(docs[i], &oid, &id_generated);
+            bson_t *final_doc = _ensure_id(docs[i], oid_ptr, &id_generated);
 
             if (MONGOLITE_UNLIKELY(!final_doc)) {
                 rc = MONGOLITE_ENOMEM;
@@ -327,30 +347,29 @@ retry_insert_many:
                 generated_docs[i] = final_doc;
             }
 
-            /* Insert via wtree3 - indexes maintained automatically */
-            rc = wtree3_insert_one_txn(txn, tree,
-                                        oid.bytes, sizeof(oid.bytes),
-                                        bson_get_data(final_doc), final_doc->len,
-                                        error);
-
-            if (MONGOLITE_UNLIKELY(rc != 0)) {
-                break;
-            }
-
-            if (oids) {
-                bson_oid_copy(&oid, &oids[i]);
-            }
+            /* Build key-value pair for batch insert */
+            kvs[inserted].key = oid_ptr->bytes;
+            kvs[inserted].key_len = sizeof(bson_oid_t);
+            kvs[inserted].value = bson_get_data(final_doc);
+            kvs[inserted].value_len = final_doc->len;
 
             inserted++;
         }
 
-        /* Cleanup generated docs */
+        /* Batch insert all documents at once - wtree3 maintains indexes automatically */
+        if (rc == MONGOLITE_OK && inserted > 0) {
+            rc = wtree3_insert_many_txn(txn, tree, kvs, inserted, error);
+        }
+
+        /* Cleanup generated docs and batch arrays */
         for (size_t i = 0; i < n_docs; i++) {
             if (generated_docs[i]) {
                 bson_destroy(generated_docs[i]);
             }
         }
         free(generated_docs);
+        free(kvs);
+        free(temp_oids);
 
         if (MONGOLITE_UNLIKELY(rc != 0)) {
             _mongolite_abort_if_auto(db, txn);

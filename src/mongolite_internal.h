@@ -2,7 +2,7 @@
 #define MONGOLITE_INTERNAL_H
 
 #include "mongolite.h"
-#include "wtree3.h"
+#include "wtree3/wtree3.h"
 #include <bson/bson.h>
 #include "mongolite_helpers.h"
 
@@ -22,7 +22,6 @@ extern "C" {
 /* Tree naming conventions */
 #define MONGOLITE_SCHEMA_TREE   "_mongolite_schema"
 #define MONGOLITE_COL_PREFIX    "col:"
-#define MONGOLITE_IDX_PREFIX    "idx:"
 
 /* Default limits */
 #define MONGOLITE_DEFAULT_MAPSIZE     (1024ULL * 1024 * 1024)  /* 1GB */
@@ -43,7 +42,7 @@ extern "C" {
 
 /* Schema type values */
 #define SCHEMA_TYPE_COLLECTION    "collection"
-#define SCHEMA_TYPE_INDEX         "index"
+/* Note: SCHEMA_TYPE_INDEX removed - indexes now fully managed by wtree3 */
 
 /* ============================================================
  * Error Codes
@@ -103,6 +102,7 @@ typedef struct mongolite_cached_index {
     bson_t *keys;               /* Index key spec (e.g., {"email": 1}) */
     bool unique;
     bool sparse;
+    MDB_dbi dbi;                /* Index DBI handle (from wtree3) */
 } mongolite_cached_index_t;
 
 /*
@@ -136,6 +136,7 @@ struct mongolite_db {
     int open_flags;                     /* MONGOLITE_OPEN_* flags */
     size_t max_bytes;
     unsigned int max_dbs;
+    uint32_t version;                   /* Schema version for extractors */
 
     /* State */
     int64_t last_insert_rowid;          /* Last generated _id as int64 */
@@ -199,25 +200,22 @@ struct mongolite_cursor {
  * ============================================================ */
 
 /*
- * Schema entry - represents a collection or index in _mongolite_schema
+ * Schema entry - represents a collection in _mongolite_schema
+ * Note: Index metadata now stored entirely in wtree3's index persistence system
  */
 typedef struct mongolite_schema_entry {
     bson_oid_t oid;                     /* Unique identifier */
-    char *name;                         /* Collection/index name */
-    char *tree_name;                    /* LMDB tree name */
-    char *type;                         /* "collection" or "index" */
+    char *name;                         /* Collection name */
+    char *tree_name;                    /* LMDB tree name (e.g., "col:users") */
+    char *type;                         /* Always "collection" now */
     int64_t created_at;                 /* Creation timestamp (ms) */
     int64_t modified_at;                /* Last modification (ms) */
-    int64_t doc_count;                  /* Document count (collections) */
-    bson_t *indexes;                    /* Index definitions (collections) */
-    bson_t *options;                    /* Creation options */
-    bson_t *metadata;                   /* User metadata */
+    int64_t doc_count;                  /* Document count */
+    bson_t *options;                    /* Creation options (capped, validators, etc.) */
+    bson_t *metadata;                   /* User-defined metadata */
 
-    /* For indexes */
-    char *collection_name;              /* Parent collection (if index) */
-    bson_t *keys;                       /* Index keys (if index) */
-    bool unique;
-    bool sparse;
+    /* REMOVED: indexes, collection_name, keys, unique, sparse */
+    /* These are now managed by wtree3's index persistence system */
 } mongolite_schema_entry_t;
 
 /* Schema operations (internal) */
@@ -261,7 +259,6 @@ void _mongolite_invalidate_index_cache(mongolite_db_t *db, const char *collectio
 
 /* Build tree names */
 char* _mongolite_collection_tree_name(const char *collection_name);
-char* _mongolite_index_tree_name(const char *collection_name, const char *index_name);
 
 /* Timestamp helpers */
 int64_t _mongolite_now_ms(void);
