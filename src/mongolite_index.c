@@ -441,27 +441,10 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
         goto cleanup;
     }
 
-    /* Get collection schema */
-    mongolite_schema_entry_t col_entry = {0};
-    rc = _mongolite_schema_get(db, collection, &col_entry, error);
-    if (rc != 0) {
-        goto cleanup;
-    }
-
-    /* Verify it's a collection */
-    if (!col_entry.type || strcmp(col_entry.type, SCHEMA_TYPE_COLLECTION) != 0) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
-                 "'%s' is not a collection", collection);
-        rc = MONGOLITE_EINVAL;
-        _mongolite_schema_entry_free(&col_entry);
-        goto cleanup;
-    }
-
-    /* Get collection tree (wtree3) */
+    /* Get collection tree (wtree3) - also verifies collection exists */
     wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
-        rc = MONGOLITE_ERROR;
-        _mongolite_schema_entry_free(&col_entry);
+        rc = MONGOLITE_ENOTFOUND;
         goto cleanup;
     }
 
@@ -470,7 +453,6 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
         set_error(error, MONGOLITE_LIB, MONGOLITE_EEXISTS,
                  "Index '%s' already exists on collection '%s'", index_name, collection);
         rc = MONGOLITE_EEXISTS;
-        _mongolite_schema_entry_free(&col_entry);
         goto cleanup;
     }
 
@@ -483,7 +465,6 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM,
                  "Failed to allocate index keys");
         rc = MONGOLITE_ENOMEM;
-        _mongolite_schema_entry_free(&col_entry);
         goto cleanup;
     }
     memcpy(keys_data_copy, keys_data, keys_len);
@@ -508,40 +489,23 @@ int mongolite_create_index(mongolite_db_t *db, const char *collection,
     if (rc != 0) {
         free(keys_data_copy);
         keys_data_copy = NULL;
-        _mongolite_schema_entry_free(&col_entry);
         rc = _mongolite_translate_wtree3_error(rc);
         goto cleanup;
     }
 
-    /* keys_data_copy ownership transferred to wtree3, set to NULL to avoid double-free */
+    /* wtree3_tree_add_index copies user_data, so we can free our copy now */
+    free(keys_data_copy);
     keys_data_copy = NULL;
 
     /* Populate index from existing documents */
     rc = wtree3_tree_populate_index(tree, index_name, error);
     if (rc != 0) {
-        /* Drop the partially created index (wtree3 will free user_data) */
+        /* Drop the partially created index (wtree3 will free its copy of user_data) */
         wtree3_tree_drop_index(tree, index_name, NULL);
-        _mongolite_schema_entry_free(&col_entry);
         /* Translate wtree3 error codes to mongolite error codes */
         rc = _mongolite_translate_wtree3_error(rc);
         goto cleanup;
     }
-
-    /* Update collection modified timestamp */
-    /* Note: Index metadata is now fully managed by wtree3's persistence system */
-    col_entry.modified_at = _mongolite_now_ms();
-
-    rc = _mongolite_schema_put(db, &col_entry, error);
-    if (rc != 0) {
-        wtree3_tree_drop_index(tree, index_name, NULL);
-        _mongolite_schema_entry_free(&col_entry);
-        goto cleanup;
-    }
-
-    _mongolite_schema_entry_free(&col_entry);
-
-    /* Note: keys_data_copy ownership is transferred to wtree3 - do not free */
-    keys_data_copy = NULL;
 
     /* Invalidate index cache so it gets reloaded with new index */
     _mongolite_invalidate_index_cache(db, collection);
@@ -581,36 +545,17 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
 
     _mongolite_lock(db);
 
-    /* Get collection schema */
-    mongolite_schema_entry_t col_entry = {0};
-    rc = _mongolite_schema_get(db, collection, &col_entry, error);
-    if (rc != 0) {
-        _mongolite_unlock(db);
-        return rc;
-    }
-
-    /* Verify it's a collection */
-    if (!col_entry.type || strcmp(col_entry.type, SCHEMA_TYPE_COLLECTION) != 0) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL,
-                 "'%s' is not a collection", collection);
-        _mongolite_schema_entry_free(&col_entry);
-        _mongolite_unlock(db);
-        return MONGOLITE_EINVAL;
-    }
-
-    /* Get collection tree (wtree3) */
+    /* Get collection tree (wtree3) - also verifies collection exists */
     wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
     if (!tree) {
-        _mongolite_schema_entry_free(&col_entry);
         _mongolite_unlock(db);
-        return MONGOLITE_ERROR;
+        return MONGOLITE_ENOTFOUND;
     }
 
     /* Check if index exists (query wtree3 directly) */
     if (!wtree3_tree_has_index(tree, index_name)) {
         set_error(error, MONGOLITE_LIB, MONGOLITE_ENOTFOUND,
                  "Index '%s' not found on collection '%s'", index_name, collection);
-        _mongolite_schema_entry_free(&col_entry);
         _mongolite_unlock(db);
         return MONGOLITE_ENOTFOUND;
     }
@@ -618,24 +563,16 @@ int mongolite_drop_index(mongolite_db_t *db, const char *collection,
     /* Drop index via wtree3 (also removes from persistence) */
     rc = wtree3_tree_drop_index(tree, index_name, error);
     if (rc != 0 && rc != WTREE3_NOT_FOUND) {
-        _mongolite_schema_entry_free(&col_entry);
         _mongolite_unlock(db);
         return rc;
     }
 
-    /* Update collection modified timestamp */
-    /* Note: Index metadata removal handled by wtree3 */
-    col_entry.modified_at = _mongolite_now_ms();
-
-    rc = _mongolite_schema_put(db, &col_entry, error);
-
     /* Invalidate index cache so it gets reloaded without dropped index */
     _mongolite_invalidate_index_cache(db, collection);
 
-    _mongolite_schema_entry_free(&col_entry);
     _mongolite_unlock(db);
 
-    return rc;
+    return MONGOLITE_OK;
 }
 
 /* NOTE: Index maintenance functions (_mongolite_index_insert/delete/update)

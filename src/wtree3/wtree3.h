@@ -1094,6 +1094,21 @@ int wtree3_verify_indexes(wtree3_tree_t *tree, gerror_t *error);
  */
 int wtree3_tree_exists(wtree3_db_t *db, const char *name, gerror_t *error);
 
+/*
+ * List all named trees (DBIs) in the database
+ *
+ * Returns array of all DBI names. Caller must free each name and the array.
+ *
+ * Parameters:
+ *   db    - Database handle
+ *   names - Output: array of tree names (caller must free each + array)
+ *   count - Output: number of trees
+ *   error - Error output
+ *
+ * Returns: 0 on success, error code on failure
+ */
+int wtree3_db_list_trees(wtree3_db_t *db, char ***names, size_t *count, gerror_t *error);
+
 /* ============================================================
  * Index Introspection Operations
  * ============================================================ */

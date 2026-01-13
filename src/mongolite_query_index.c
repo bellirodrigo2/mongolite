@@ -93,7 +93,10 @@ query_analysis_t* _analyze_query_for_index(const bson_t *filter) {
                 if (bson_iter_init(&subiter, &subdoc)) {
                     while (bson_iter_next(&subiter)) {
                         if (bson_iter_key(&subiter)[0] == '$') {
-                            /* Has operator - not simple equality, return NULL */
+                            /* Has operator - not simple equality, cleanup and return NULL */
+                            for (size_t i = 0; i < analysis->equality_count; i++) {
+                                free(analysis->equality_fields[i]);
+                            }
                             free(analysis->equality_fields);
                             free(analysis);
                             return NULL;

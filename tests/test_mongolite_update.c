@@ -1229,6 +1229,224 @@ static void test_replace_one_json_wrapper(void **state) {
     mongolite_close(db);
 }
 
+/* ============================================================
+ * find_and_modify Tests (Coverage improvement)
+ * ============================================================ */
+
+static void test_find_and_modify_return_old(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    // Insert a document
+    bson_oid_t id;
+    int rc = mongolite_insert_one_json(db, "users", "{\"name\": \"Alice\", \"score\": 100}", &id, &error);
+    assert_int_equal(0, rc);
+
+    // Find and modify - return old document
+    bson_t *filter = bson_new();
+    BSON_APPEND_OID(filter, "_id", &id);
+
+    bson_t *update = bson_new();
+    bson_t set_doc;
+    BSON_APPEND_DOCUMENT_BEGIN(update, "$set", &set_doc);
+    BSON_APPEND_INT32(&set_doc, "score", 200);
+    bson_append_document_end(update, &set_doc);
+
+    bson_t *result = mongolite_find_and_modify(db, "users", filter, update, false, false, &error);
+    assert_non_null(result);
+
+    // Should return the OLD document (score = 100)
+    bson_iter_t iter;
+    assert_true(bson_iter_init_find(&iter, result, "score"));
+    assert_int_equal(100, bson_iter_int32(&iter));
+
+    bson_destroy(result);
+    bson_destroy(filter);
+    bson_destroy(update);
+    mongolite_close(db);
+}
+
+static void test_find_and_modify_return_new(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    // Insert a document
+    bson_oid_t id;
+    int rc = mongolite_insert_one_json(db, "users", "{\"name\": \"Bob\", \"score\": 50}", &id, &error);
+    assert_int_equal(0, rc);
+
+    // Find and modify - return new document
+    bson_t *filter = bson_new();
+    BSON_APPEND_OID(filter, "_id", &id);
+
+    bson_t *update = bson_new();
+    bson_t set_doc;
+    BSON_APPEND_DOCUMENT_BEGIN(update, "$set", &set_doc);
+    BSON_APPEND_INT32(&set_doc, "score", 75);
+    bson_append_document_end(update, &set_doc);
+
+    bson_t *result = mongolite_find_and_modify(db, "users", filter, update, true, false, &error);
+    assert_non_null(result);
+
+    // Should return the NEW document (score = 75)
+    bson_iter_t iter;
+    assert_true(bson_iter_init_find(&iter, result, "score"));
+    assert_int_equal(75, bson_iter_int32(&iter));
+
+    bson_destroy(result);
+    bson_destroy(filter);
+    bson_destroy(update);
+    mongolite_close(db);
+}
+
+static void test_find_and_modify_upsert(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    // Find and modify with upsert - should insert if not found
+    bson_t *filter = bson_new();
+    BSON_APPEND_UTF8(filter, "name", "NewUser");
+
+    bson_t *update = bson_new();
+    bson_t set_doc;
+    BSON_APPEND_DOCUMENT_BEGIN(update, "$set", &set_doc);
+    BSON_APPEND_INT32(&set_doc, "score", 999);
+    bson_append_document_end(update, &set_doc);
+
+    bson_t *result = mongolite_find_and_modify(db, "users", filter, update, true, true, &error);
+    assert_non_null(result);
+
+    // Should return the new document
+    bson_iter_t iter;
+    assert_true(bson_iter_init_find(&iter, result, "name"));
+    assert_string_equal("NewUser", bson_iter_utf8(&iter, NULL));
+    assert_true(bson_iter_init_find(&iter, result, "score"));
+    assert_int_equal(999, bson_iter_int32(&iter));
+
+    bson_destroy(result);
+    bson_destroy(filter);
+    bson_destroy(update);
+    mongolite_close(db);
+}
+
+static void test_find_and_modify_not_found(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    // Find and modify - document doesn't exist, upsert=false
+    bson_t *filter = bson_new();
+    BSON_APPEND_UTF8(filter, "name", "NonExistent");
+
+    bson_t *update = bson_new();
+    bson_t set_doc;
+    BSON_APPEND_DOCUMENT_BEGIN(update, "$set", &set_doc);
+    BSON_APPEND_INT32(&set_doc, "score", 123);
+    bson_append_document_end(update, &set_doc);
+
+    bson_t *result = mongolite_find_and_modify(db, "users", filter, update, false, false, &error);
+    // Should return NULL - no document found
+    assert_null(result);
+
+    bson_destroy(filter);
+    bson_destroy(update);
+    mongolite_close(db);
+}
+
+static void test_find_and_modify_json(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    // Insert a document
+    bson_oid_t id;
+    int rc = mongolite_insert_one_json(db, "users", "{\"name\": \"Charlie\", \"level\": 1}", &id, &error);
+    assert_int_equal(0, rc);
+
+    // Use JSON wrapper
+    char oid_str[25];
+    bson_oid_to_string(&id, oid_str);
+    char filter_json[256];
+    snprintf(filter_json, sizeof(filter_json), "{\"_id\": {\"$oid\": \"%s\"}}", oid_str);
+
+    bson_t *result = mongolite_find_and_modify_json(db, "users", filter_json,
+        "{\"$set\": {\"level\": 5}}", true, false, &error);
+    assert_non_null(result);
+
+    // Should return the NEW document (level = 5)
+    bson_iter_t iter;
+    assert_true(bson_iter_init_find(&iter, result, "level"));
+    assert_int_equal(5, bson_iter_int32(&iter));
+
+    bson_destroy(result);
+    mongolite_close(db);
+}
+
+static void test_find_and_modify_null_params(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    bson_t *filter = bson_new();
+    bson_t *update = bson_new();
+
+    // NULL db
+    bson_t *result = mongolite_find_and_modify(NULL, "users", filter, update, false, false, &error);
+    assert_null(result);
+
+    // NULL collection
+    result = mongolite_find_and_modify(db, NULL, filter, update, false, false, &error);
+    assert_null(result);
+
+    // NULL filter
+    result = mongolite_find_and_modify(db, "users", NULL, update, false, false, &error);
+    assert_null(result);
+
+    // NULL update
+    result = mongolite_find_and_modify(db, "users", filter, NULL, false, false, &error);
+    assert_null(result);
+
+    bson_destroy(filter);
+    bson_destroy(update);
+    mongolite_close(db);
+}
+
+static void test_find_and_modify_json_invalid(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    // Invalid JSON filter
+    bson_t *result = mongolite_find_and_modify_json(db, "users", "{invalid json}",
+        "{\"$set\": {\"x\": 1}}", false, false, &error);
+    assert_null(result);
+
+    // Invalid JSON update
+    error.code = 0;
+    result = mongolite_find_and_modify_json(db, "users", "{}",
+        "{invalid json}", false, false, &error);
+    assert_null(result);
+
+    mongolite_close(db);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_teardown(test_set_operator, teardown),
@@ -1263,6 +1481,14 @@ int main(void) {
         cmocka_unit_test_teardown(test_update_many_json_wrapper, teardown),
         cmocka_unit_test_teardown(test_replace_one_json_wrapper, teardown),
         cmocka_unit_test_teardown(test_update_many_large_batch, teardown),
+        /* find_and_modify tests (coverage improvement) */
+        cmocka_unit_test_teardown(test_find_and_modify_return_old, teardown),
+        cmocka_unit_test_teardown(test_find_and_modify_return_new, teardown),
+        cmocka_unit_test_teardown(test_find_and_modify_upsert, teardown),
+        cmocka_unit_test_teardown(test_find_and_modify_not_found, teardown),
+        cmocka_unit_test_teardown(test_find_and_modify_json, teardown),
+        cmocka_unit_test_teardown(test_find_and_modify_null_params, teardown),
+        cmocka_unit_test_teardown(test_find_and_modify_json_invalid, teardown),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

@@ -63,7 +63,6 @@ set(MONGOLITE_SOURCES
     # mongolite sources
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_db.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_util.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_schema.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_txn.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_collection.c
     ${CMAKE_CURRENT_SOURCE_DIR}/mongolite_insert.c

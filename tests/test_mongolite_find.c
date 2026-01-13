@@ -634,6 +634,252 @@ static void test_find_nonexistent_collection(void **state) {
     mongolite_close(db);
 }
 
+/* ============================================================
+ * Cursor Skip/Sort Tests (Coverage improvement)
+ * ============================================================ */
+
+static void test_cursor_skip(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    mongolite_cursor_t *cursor = mongolite_find(db, "users", NULL, NULL, &error);
+    assert_non_null(cursor);
+
+    /* Set skip to 2 - should skip first 2 documents */
+    int rc = mongolite_cursor_set_skip(cursor, 2);
+    assert_int_equal(0, rc);
+
+    int count = 0;
+    const bson_t *doc;
+    while (mongolite_cursor_next(cursor, &doc)) {
+        count++;
+    }
+
+    /* 5 total docs - 2 skipped = 3 returned */
+    assert_int_equal(3, count);
+
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+static void test_cursor_skip_null(void **state) {
+    (void)state;
+
+    /* Skip with NULL cursor should return error */
+    int rc = mongolite_cursor_set_skip(NULL, 2);
+    assert_int_equal(MONGOLITE_EINVAL, rc);
+}
+
+static void test_cursor_sort(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    mongolite_cursor_t *cursor = mongolite_find(db, "users", NULL, NULL, &error);
+    assert_non_null(cursor);
+
+    /* Set sort by age ascending */
+    bson_t *sort = bson_new();
+    BSON_APPEND_INT32(sort, "age", 1);
+
+    int rc = mongolite_cursor_set_sort(cursor, sort);
+    assert_int_equal(0, rc);
+
+    /* Note: Sort is stored but not yet implemented in cursor_next */
+    int count = 0;
+    const bson_t *doc;
+    while (mongolite_cursor_next(cursor, &doc)) {
+        count++;
+    }
+
+    assert_int_equal(5, count);
+
+    bson_destroy(sort);
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+static void test_cursor_sort_null(void **state) {
+    (void)state;
+
+    /* Sort with NULL cursor or NULL sort should return error */
+    int rc = mongolite_cursor_set_sort(NULL, NULL);
+    assert_int_equal(MONGOLITE_EINVAL, rc);
+}
+
+static void test_cursor_skip_after_iteration(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    mongolite_cursor_t *cursor = mongolite_find(db, "users", NULL, NULL, &error);
+    assert_non_null(cursor);
+
+    /* Iterate once */
+    const bson_t *doc;
+    mongolite_cursor_next(cursor, &doc);
+
+    /* Try to set skip after iteration started - should fail */
+    int rc = mongolite_cursor_set_skip(cursor, 2);
+    assert_int_equal(MONGOLITE_ERROR, rc);
+
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+static void test_cursor_sort_after_iteration(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    mongolite_cursor_t *cursor = mongolite_find(db, "users", NULL, NULL, &error);
+    assert_non_null(cursor);
+
+    /* Iterate once */
+    const bson_t *doc;
+    mongolite_cursor_next(cursor, &doc);
+
+    /* Try to set sort after iteration started - should fail */
+    bson_t *sort = bson_new();
+    BSON_APPEND_INT32(sort, "age", 1);
+
+    int rc = mongolite_cursor_set_sort(cursor, sort);
+    assert_int_equal(MONGOLITE_ERROR, rc);
+
+    bson_destroy(sort);
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+static void test_cursor_limit_null(void **state) {
+    (void)state;
+
+    /* Limit with NULL cursor should return error */
+    int rc = mongolite_cursor_set_limit(NULL, 5);
+    assert_int_equal(MONGOLITE_EINVAL, rc);
+}
+
+static void test_cursor_limit_after_iteration(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    mongolite_cursor_t *cursor = mongolite_find(db, "users", NULL, NULL, &error);
+    assert_non_null(cursor);
+
+    /* Iterate once */
+    const bson_t *doc;
+    mongolite_cursor_next(cursor, &doc);
+
+    /* Try to set limit after iteration started - should fail */
+    int rc = mongolite_cursor_set_limit(cursor, 2);
+    assert_int_equal(MONGOLITE_ERROR, rc);
+
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+static void test_cursor_more(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    mongolite_cursor_t *cursor = mongolite_find(db, "users", NULL, NULL, &error);
+    assert_non_null(cursor);
+
+    /* Before iteration, cursor_more should be true */
+    assert_true(mongolite_cursor_more(cursor));
+
+    /* Iterate through all documents */
+    const bson_t *doc;
+    while (mongolite_cursor_next(cursor, &doc)) {
+        /* Do nothing */
+    }
+
+    /* After exhaustion, cursor_more should be false */
+    assert_false(mongolite_cursor_more(cursor));
+
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+static void test_cursor_more_null(void **state) {
+    (void)state;
+
+    /* cursor_more with NULL should return false */
+    assert_false(mongolite_cursor_more(NULL));
+}
+
+static void test_cursor_next_exhausted(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    mongolite_cursor_t *cursor = mongolite_find(db, "users", NULL, NULL, &error);
+    assert_non_null(cursor);
+
+    /* Set limit to 1 */
+    mongolite_cursor_set_limit(cursor, 1);
+
+    /* First call should succeed */
+    const bson_t *doc;
+    assert_true(mongolite_cursor_next(cursor, &doc));
+    assert_non_null(doc);
+
+    /* Second call should fail (limit reached) */
+    assert_false(mongolite_cursor_next(cursor, &doc));
+
+    /* Third call on exhausted cursor should still fail */
+    assert_false(mongolite_cursor_next(cursor, &doc));
+
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
+static void test_cursor_skip_and_limit(void **state) {
+    (void)state;
+    mongolite_db_t *db = setup_test_db();
+    assert_non_null(db);
+
+    gerror_t error = {0};
+
+    mongolite_cursor_t *cursor = mongolite_find(db, "users", NULL, NULL, &error);
+    assert_non_null(cursor);
+
+    /* Skip 1, limit 2 */
+    int rc = mongolite_cursor_set_skip(cursor, 1);
+    assert_int_equal(0, rc);
+    rc = mongolite_cursor_set_limit(cursor, 2);
+    assert_int_equal(0, rc);
+
+    int count = 0;
+    const bson_t *doc;
+    while (mongolite_cursor_next(cursor, &doc)) {
+        count++;
+    }
+
+    /* Should get 2 documents (skip 1, limit to 2) */
+    assert_int_equal(2, count);
+
+    mongolite_cursor_destroy(cursor);
+    mongolite_close(db);
+}
+
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_teardown(test_find_one_no_filter, teardown),
@@ -661,6 +907,19 @@ int main(void) {
         cmocka_unit_test_teardown(test_find_cursor_with_projection, teardown),
         cmocka_unit_test_teardown(test_find_empty_collection, teardown),
         cmocka_unit_test_teardown(test_find_nonexistent_collection, teardown),
+        /* Cursor skip/sort/limit coverage tests */
+        cmocka_unit_test_teardown(test_cursor_skip, teardown),
+        cmocka_unit_test(test_cursor_skip_null),
+        cmocka_unit_test_teardown(test_cursor_sort, teardown),
+        cmocka_unit_test(test_cursor_sort_null),
+        cmocka_unit_test_teardown(test_cursor_skip_after_iteration, teardown),
+        cmocka_unit_test_teardown(test_cursor_sort_after_iteration, teardown),
+        cmocka_unit_test(test_cursor_limit_null),
+        cmocka_unit_test_teardown(test_cursor_limit_after_iteration, teardown),
+        cmocka_unit_test_teardown(test_cursor_more, teardown),
+        cmocka_unit_test(test_cursor_more_null),
+        cmocka_unit_test_teardown(test_cursor_next_exhausted, teardown),
+        cmocka_unit_test_teardown(test_cursor_skip_and_limit, teardown),
     };
 
     return cmocka_run_group_tests(tests, NULL, NULL);

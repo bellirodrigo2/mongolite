@@ -7,7 +7,6 @@
  *
  * Note: Other functionality has been moved to separate modules:
  * - mongolite_util.c: Utilities, locks, tree cache
- * - mongolite_schema.c: Schema management
  * - mongolite_txn.c: Transaction management
  */
 
@@ -137,20 +136,7 @@ int mongolite_open(const char *filename, mongolite_db_t **db,
         return rc;
     }
 
-    /* Initialize schema tree (uses wtree3) */
-    rc = _mongolite_schema_init(new_db, error);
-    if (rc != 0) {
-        _mongolite_lock_free(new_db);
-        wtree3_db_close(new_db->wdb);
-        free(new_db->path);
-        free(new_db);
-        return rc;
-    }
-
-    /* Copy user metadata if provided */
-    if (config && config->metadata) {
-        new_db->db_metadata = bson_copy(config->metadata);
-    }
+    /* Note: Schema system removed - collections are simply wtree3 trees with "col:" prefix */
 
     *db = new_db;
     return MONGOLITE_OK;
@@ -175,19 +161,9 @@ int mongolite_close(mongolite_db_t *db) {
     /* Clear tree cache (closes wtree3 collection trees) */
     _mongolite_tree_cache_clear(db);
 
-    /* Close schema tree (wtree3) */
-    if (db->schema_tree) {
-        wtree3_tree_close(db->schema_tree);
-    }
-
     /* Close LMDB environment via wtree3 */
     if (db->wdb) {
         wtree3_db_close(db->wdb);
-    }
-
-    /* Free metadata */
-    if (db->db_metadata) {
-        bson_destroy(db->db_metadata);
     }
 
     /* Free mutex */
@@ -215,36 +191,4 @@ int mongolite_changes(mongolite_db_t *db) {
     return db ? db->changes : 0;
 }
 
-/* ============================================================
- * Database Metadata
- * ============================================================ */
-
-const bson_t* mongolite_db_metadata(mongolite_db_t *db) {
-    return db ? db->db_metadata : NULL;
-}
-
-int mongolite_db_set_metadata(mongolite_db_t *db, const bson_t *metadata, gerror_t *error) {
-    if (!db) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Database is NULL");
-        return MONGOLITE_EINVAL;
-    }
-
-    _mongolite_lock(db);
-
-    if (db->db_metadata) {
-        bson_destroy(db->db_metadata);
-        db->db_metadata = NULL;
-    }
-
-    if (metadata) {
-        db->db_metadata = bson_copy(metadata);
-        if (!db->db_metadata) {
-            _mongolite_unlock(db);
-            set_error(error, "libbson", MONGOLITE_ENOMEM, "Failed to copy bson metadata");
-            return MONGOLITE_ENOMEM;
-        }
-    }
-
-    _mongolite_unlock(db);
-    return MONGOLITE_OK;
-}
+/* Note: Database metadata functions removed - schema system eliminated */

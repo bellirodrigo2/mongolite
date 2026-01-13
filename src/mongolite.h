@@ -31,7 +31,6 @@ typedef struct mongolite_cursor mongolite_cursor_t;
  * Example usage:
  *   db_config_t config = {0};  // Zero-init for defaults
  *   config.max_bytes = 10ULL * 1024 * 1024 * 1024;  // 10GB
- *   config.metadata = my_app_metadata_bson;
  *   mongolite_open("./mydb", &db, &config, &error);
  */
 typedef struct db_config {
@@ -48,9 +47,6 @@ typedef struct db_config {
     int64_t cache_max_bytes;    /* Max cache memory in bytes */
     uint64_t cache_ttl_ms;      /* Default cache TTL in milliseconds */
 
-    /* User-defined metadata (stored in DB, retrievable via mongolite_db_metadata) */
-    const bson_t *metadata;     /* Optional BSON - will be copied */
-
     /* Reserved for future expansion */
     void *_reserved[4];
 } db_config_t;
@@ -58,24 +54,10 @@ typedef struct db_config {
 /*
  * Collection configuration (passed to mongolite_collection_create)
  *
- * Example:
- *   col_config_t config = {0};
- *   config.capped = true;
- *   config.max_docs = 10000;
- *   mongolite_collection_create(db, "logs", &config, &error);
+ * Note: Currently not used - collections are simple wtree3 trees.
+ * Kept for API compatibility and potential future features.
  */
 typedef struct col_config {
-    /* Capped collection settings */
-    bool capped;                /* Is this a capped collection? */
-    int64_t max_docs;           /* Max documents (capped only) */
-    int64_t max_bytes;          /* Max size in bytes (capped only) */
-
-    /* Validation (future) */
-    const bson_t *validator;    /* JSON Schema validator document */
-
-    /* User-defined metadata */
-    const bson_t *metadata;     /* Optional BSON - will be copied */
-
     /* Reserved for future expansion */
     void *_reserved[4];
 } col_config_t;
@@ -98,9 +80,6 @@ typedef struct index_config {
 
     /* Partial filter (future) */
     const bson_t *partial_filter;
-
-    /* User-defined metadata */
-    const bson_t *metadata;     /* Optional BSON - will be copied */
 
     /* Reserved for future expansion */
     void *_reserved[4];
@@ -244,15 +223,6 @@ mongolite_cursor_t* mongolite_aggregate(mongolite_db_t *db, const char *collecti
 
 const char* mongolite_version(void);
 const char* mongolite_errstr(int error_code);
-
-// Database metadata (user-defined, from db_config)
-const bson_t* mongolite_db_metadata(mongolite_db_t *db);
-int mongolite_db_set_metadata(mongolite_db_t *db, const bson_t *metadata, gerror_t *error);
-
-// Collection metadata
-const bson_t* mongolite_collection_metadata(mongolite_db_t *db, const char *collection, gerror_t *error);
-int mongolite_collection_set_metadata(mongolite_db_t *db, const char *collection,
-                                      const bson_t *metadata, gerror_t *error);
 
 // Database sync (flush to disk)
 int mongolite_sync(mongolite_db_t *db, bool force, gerror_t *error);

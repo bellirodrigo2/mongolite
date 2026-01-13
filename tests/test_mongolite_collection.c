@@ -51,36 +51,7 @@ static void test_collection_create(void **state) {
     mongolite_close(db);
 }
 
-static void test_collection_create_with_config(void **state) {
-    (void)state;
-    mongolite_db_t *db = NULL;
-    gerror_t error = {0};
-    
-    db_config_t dbconfig = {0};
-    dbconfig.max_bytes = 32ULL * 1024 * 1024;
-    int rc = mongolite_open(TEST_DB_PATH, &db, &dbconfig, &error);
-    assert_int_equal(0, rc);
-    
-    col_config_t config = {0};
-    bson_t *metadata = bson_new();
-    BSON_APPEND_UTF8(metadata, "description", "User accounts");
-    BSON_APPEND_INT32(metadata, "version", 1);
-    config.metadata = metadata;
-    
-    rc = mongolite_collection_create(db, "users", &config, &error);
-    assert_int_equal(0, rc);
-    
-    const bson_t *stored = mongolite_collection_metadata(db, "users", &error);
-    assert_non_null(stored);
-    
-    bson_iter_t iter;
-    assert_true(bson_iter_init_find(&iter, stored, "description"));
-    assert_string_equal("User accounts", bson_iter_utf8(&iter, NULL));
-    
-    bson_destroy((bson_t*)stored);
-    bson_destroy(metadata);
-    mongolite_close(db);
-}
+/* Note: Collection config/metadata tests removed - schema system eliminated */
 
 static void test_collection_drop(void **state) {
     (void)state;
@@ -176,40 +147,7 @@ static void test_collection_count_empty(void **state) {
     mongolite_close(db);
 }
 
-static void test_collection_metadata(void **state) {
-    (void)state;
-    mongolite_db_t *db = NULL;
-    gerror_t error = {0};
-    
-    db_config_t config = {0};
-    config.max_bytes = 32ULL * 1024 * 1024;
-    int rc = mongolite_open(TEST_DB_PATH, &db, &config, &error);
-    assert_int_equal(0, rc);
-    
-    rc = mongolite_collection_create(db, "meta_test", NULL, &error);
-    assert_int_equal(0, rc);
-    
-    const bson_t *meta = mongolite_collection_metadata(db, "meta_test", &error);
-    assert_null(meta);
-    
-    bson_t *new_meta = bson_new();
-    BSON_APPEND_UTF8(new_meta, "owner", "admin");
-    BSON_APPEND_INT32(new_meta, "priority", 5);
-    
-    rc = mongolite_collection_set_metadata(db, "meta_test", new_meta, &error);
-    assert_int_equal(0, rc);
-    
-    meta = mongolite_collection_metadata(db, "meta_test", &error);
-    assert_non_null(meta);
-    
-    bson_iter_t iter;
-    assert_true(bson_iter_init_find(&iter, meta, "owner"));
-    assert_string_equal("admin", bson_iter_utf8(&iter, NULL));
-    
-    bson_destroy((bson_t*)meta);
-    bson_destroy(new_meta);
-    mongolite_close(db);
-}
+/* Note: Collection metadata tests removed - schema system eliminated */
 
 static void test_collection_persistence(void **state) {
     (void)state;
@@ -253,14 +191,14 @@ static void test_collection_persistence(void **state) {
 int main(void) {
     const struct CMUnitTest tests[] = {
         cmocka_unit_test_setup_teardown(test_collection_create, setup, teardown),
-        cmocka_unit_test_setup_teardown(test_collection_create_with_config, setup, teardown),
+        /* test_collection_create_with_config removed - schema/metadata eliminated */
         cmocka_unit_test_setup_teardown(test_collection_drop, setup, teardown),
         cmocka_unit_test_setup_teardown(test_collection_list, setup, teardown),
         cmocka_unit_test_setup_teardown(test_collection_exists, setup, teardown),
         cmocka_unit_test_setup_teardown(test_collection_count_empty, setup, teardown),
-        cmocka_unit_test_setup_teardown(test_collection_metadata, setup, teardown),
+        /* test_collection_metadata removed - schema/metadata eliminated */
         cmocka_unit_test_setup_teardown(test_collection_persistence, setup, teardown),
     };
-    
+
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

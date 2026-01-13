@@ -123,6 +123,9 @@ add_mongolite_integration_test(test_index_maintenance)
 add_mongolite_integration_test(test_query_optimization)
 add_mongolite_integration_test(test_stress)
 
+# Mark stress tests with "stress" label for separate execution
+set_tests_properties(test_stress PROPERTIES LABELS "stress")
+
 # ============================================================
 # Collect all test targets for dependencies
 # ============================================================
@@ -147,6 +150,12 @@ set(ALL_TEST_TARGETS
     test_query_optimization
     test_stress
 )
+
+# ============================================================
+# wtree3 standalone tests subdirectory
+# ============================================================
+
+add_subdirectory(wtree)
 
 # Custom target to run all tests
 add_custom_target(run-tests

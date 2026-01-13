@@ -121,72 +121,7 @@ void _mongolite_abort_if_auto(mongolite_db_t *db, wtree3_txn_t *txn) {
     }
 }
 
-/* ============================================================
- * Doc Count Update (within transaction)
- *
- * NOTE: With wtree3, doc_count is maintained internally by the tree.
- * This function now just updates the schema for persistence.
- * The cached count comes from wtree3_tree_count().
- * ============================================================ */
-
-int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree3_txn_t *txn,
-                                     const char *collection, int64_t delta,
-                                     gerror_t *error) {
-    if (!db || !txn || !collection) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_EINVAL, "Invalid parameters");
-        return MONGOLITE_EINVAL;
-    }
-
-    /* Read schema entry using provided transaction */
-    const void *value;
-    size_t value_size;
-    int rc = wtree3_get_txn(txn, db->schema_tree, collection, strlen(collection),
-                           &value, &value_size, error);
-    if (rc != 0) {
-        return rc;
-    }
-
-    /* Parse the schema entry */
-    bson_t doc;
-    if (!bson_init_static(&doc, value, value_size)) {
-        set_error(error, MONGOLITE_LIB, MONGOLITE_ERROR, "Invalid BSON in schema");
-        return MONGOLITE_ERROR;
-    }
-
-    mongolite_schema_entry_t entry = {0};
-    rc = _mongolite_schema_entry_from_bson(&doc, &entry, error);
-    if (rc != 0) {
-        return rc;
-    }
-
-    /* Get the current count from wtree3 (source of truth) */
-    wtree3_tree_t *tree = _mongolite_tree_cache_get(db, collection);
-    if (tree) {
-        entry.doc_count = wtree3_tree_count(tree);
-    } else {
-        /* Fallback if tree not cached */
-        entry.doc_count += delta;
-        if (entry.doc_count < 0) entry.doc_count = 0;
-    }
-    entry.modified_at = _mongolite_now_ms();
-
-    /* Serialize and write back using provided transaction */
-    bson_t *new_doc = _mongolite_schema_entry_to_bson(&entry);
-    if (!new_doc) {
-        _mongolite_schema_entry_free(&entry);
-        set_error(error, "system", MONGOLITE_ENOMEM, "Failed to serialize schema entry");
-        return MONGOLITE_ENOMEM;
-    }
-
-    rc = wtree3_update_txn(txn, db->schema_tree,
-                          entry.name, strlen(entry.name),
-                          bson_get_data(new_doc), new_doc->len, error);
-
-    bson_destroy(new_doc);
-    _mongolite_schema_entry_free(&entry);
-
-    return rc;
-}
+/* Note: Doc count now managed automatically by wtree3_tree_count() */
 
 /* ============================================================
  * Transaction Support (Public API)

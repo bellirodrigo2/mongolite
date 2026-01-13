@@ -330,9 +330,25 @@ const char* wtree3_tree_name(wtree3_tree_t *tree) {
     return tree ? tree->name : NULL;
 }
 
-WTREE_PURE
+/*
+ * Get actual entry count from LMDB.
+ * This returns the committed count, properly reflecting transaction rollbacks.
+ * Note: Cannot be WTREE_PURE since it reads from database.
+ */
 int64_t wtree3_tree_count(wtree3_tree_t *tree) {
-    return tree ? tree->entry_count : 0;
+    if (!tree || !tree->db) return 0;
+
+    /* Use a read transaction to get stats */
+    MDB_txn *txn;
+    int rc = mdb_txn_begin(tree->db->env, NULL, MDB_RDONLY, &txn);
+    if (rc != 0) return 0;
+
+    MDB_stat stat;
+    rc = mdb_stat(txn, tree->dbi, &stat);
+    mdb_txn_abort(txn);
+
+    if (rc != 0) return 0;
+    return (int64_t)stat.ms_entries;
 }
 
 WTREE_PURE
@@ -410,4 +426,93 @@ int wtree3_tree_exists(wtree3_db_t *db, const char *name, gerror_t *error) {
     }
 
     return result;
+}
+
+/* ============================================================
+ * List All Trees (DBIs)
+ * ============================================================ */
+
+/* Helper context for list_trees transaction */
+typedef struct {
+    char ***out_names;
+    size_t *out_count;
+    gerror_t *error;
+} list_trees_ctx_t;
+
+static int list_trees_txn(MDB_txn *txn, void *user_data) {
+    list_trees_ctx_t *ctx = (list_trees_ctx_t *)user_data;
+
+    /* Open the main (unnamed) DBI to scan for named DBIs */
+    MDB_dbi main_dbi;
+    int rc = mdb_dbi_open(txn, NULL, 0, &main_dbi);
+    if (WTREE_UNLIKELY(rc != 0)) {
+        /* If main DBI doesn't exist, there are no trees */
+        *ctx->out_names = NULL;
+        *ctx->out_count = 0;
+        return WTREE3_OK;
+    }
+
+    MDB_cursor *cursor;
+    rc = mdb_cursor_open(txn, main_dbi, &cursor);
+    if (WTREE_UNLIKELY(rc != 0)) {
+        return translate_mdb_error(rc, ctx->error);
+    }
+
+    /* Count all DBI entries first */
+    MDB_val key, val;
+    size_t total = 0;
+    rc = mdb_cursor_get(cursor, &key, &val, MDB_FIRST);
+    while (rc == 0) {
+        total++;
+        rc = mdb_cursor_get(cursor, &key, &val, MDB_NEXT);
+    }
+
+    if (total == 0) {
+        mdb_cursor_close(cursor);
+        *ctx->out_names = NULL;
+        *ctx->out_count = 0;
+        return WTREE3_OK;
+    }
+
+    /* Allocate result array */
+    char **names = calloc(total, sizeof(char*));
+    if (WTREE_UNLIKELY(!names)) {
+        mdb_cursor_close(cursor);
+        return WTREE3_ENOMEM;
+    }
+
+    /* Collect all DBI names */
+    size_t count = 0;
+    rc = mdb_cursor_get(cursor, &key, &val, MDB_FIRST);
+    while (rc == 0 && count < total) {
+        /* Allocate and copy key as name */
+        names[count] = malloc(key.mv_size + 1);
+        if (WTREE_LIKELY(names[count])) {
+            memcpy(names[count], key.mv_data, key.mv_size);
+            names[count][key.mv_size] = '\0';
+            count++;
+        }
+        rc = mdb_cursor_get(cursor, &key, &val, MDB_NEXT);
+    }
+
+    mdb_cursor_close(cursor);
+
+    *ctx->out_names = names;
+    *ctx->out_count = count;
+    return WTREE3_OK;
+}
+
+WTREE_WARN_UNUSED
+int wtree3_db_list_trees(wtree3_db_t *db, char ***names, size_t *count, gerror_t *error) {
+    if (WTREE_UNLIKELY(!db || !names || !count)) {
+        set_error(error, WTREE3_LIB, WTREE3_EINVAL, "DB, names, and count cannot be NULL");
+        return WTREE3_EINVAL;
+    }
+
+    *names = NULL;
+    *count = 0;
+
+    list_trees_ctx_t ctx = { .out_names = names, .out_count = count, .error = error };
+
+    return with_read_txn(db, list_trees_txn, &ctx, error);
 }

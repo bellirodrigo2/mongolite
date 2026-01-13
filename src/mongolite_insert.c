@@ -204,15 +204,6 @@ retry_insert:
         /* Note: Index maintenance is automatic with wtree3_insert_one_txn */
         /* Note: Doc count is maintained by wtree3 internally */
 
-        /* Update schema doc count for persistence */
-        rc = _mongolite_update_doc_count_txn(db, txn, collection, 1, error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            _mongolite_abort_if_auto(db, txn);
-            if (id_generated) bson_destroy(final_doc);
-            _mongolite_unlock(db);
-            return rc;
-        }
-
         /* Commit */
         rc = _mongolite_commit_if_auto(db, txn, error);
         if (MONGOLITE_UNLIKELY(rc != 0)) {
@@ -397,14 +388,7 @@ retry_insert_many:
             return _mongolite_translate_wtree3_error(rc);
         }
 
-        /* Update schema doc count for persistence */
-        rc = _mongolite_update_doc_count_txn(db, txn, collection, (int64_t)inserted, error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            _mongolite_abort_if_auto(db, txn);
-            free(oids);
-            _mongolite_unlock(db);
-            return rc;
-        }
+        /* Note: Doc count is maintained by wtree3 internally */
 
         /* Commit */
         rc = _mongolite_commit_if_auto(db, txn, error);

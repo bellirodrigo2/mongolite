@@ -20,7 +20,6 @@ extern "C" {
 #define MONGOLITE_VERSION "0.1.0"
 
 /* Tree naming conventions */
-#define MONGOLITE_SCHEMA_TREE   "_mongolite_schema"
 #define MONGOLITE_COL_PREFIX    "col:"
 #define MONGOLITE_IDX_PREFIX    "idx:"
 
@@ -29,21 +28,7 @@ extern "C" {
 #define MONGOLITE_DEFAULT_MAX_DBS     256
 #define MONGOLITE_DEFAULT_MAX_COLLECTIONS 128
 
-/* Schema document field names */
-#define SCHEMA_FIELD_ID           "_id"
-#define SCHEMA_FIELD_NAME         "name"
-#define SCHEMA_FIELD_TREE_NAME    "tree_name"
-#define SCHEMA_FIELD_TYPE         "type"
-#define SCHEMA_FIELD_CREATED_AT   "created_at"
-#define SCHEMA_FIELD_MODIFIED_AT  "modified_at"
-#define SCHEMA_FIELD_DOC_COUNT    "doc_count"
-#define SCHEMA_FIELD_INDEXES      "indexes"
-#define SCHEMA_FIELD_OPTIONS      "options"
-#define SCHEMA_FIELD_METADATA     "metadata"
-
-/* Schema type values */
-#define SCHEMA_TYPE_COLLECTION    "collection"
-/* Note: SCHEMA_TYPE_INDEX removed - indexes now fully managed by wtree3 */
+/* Note: Schema system removed - collections are simply wtree3 trees with "col:" prefix */
 
 /* ============================================================
  * Error Codes
@@ -130,14 +115,13 @@ typedef struct mongolite_tree_cache_entry {
 struct mongolite_db {
     /* LMDB backend (wtree3 for unified index-aware operations) */
     wtree3_db_t *wdb;                   /* LMDB environment (wtree3) */
-    wtree3_tree_t *schema_tree;         /* _mongolite_schema tree (wtree3) */
 
     /* Configuration (copied from open) */
     char *path;                         /* Database directory path */
     int open_flags;                     /* MONGOLITE_OPEN_* flags */
     size_t max_bytes;
     unsigned int max_dbs;
-    uint32_t version;                   /* Schema version for extractors */
+    uint32_t version;                   /* Extractor version for indexes */
 
     /* State */
     int64_t last_insert_rowid;          /* Last generated _id as int64 */
@@ -151,9 +135,6 @@ struct mongolite_db {
     /* Tree cache (simple linked list for now) */
     mongolite_tree_cache_entry_t *tree_cache;
     size_t tree_cache_count;
-
-    /* Database metadata (user-defined, from config) */
-    bson_t *db_metadata;
 
     /* Thread safety (if FULLMUTEX) */
 #ifdef _WIN32
@@ -196,45 +177,7 @@ struct mongolite_cursor {
     size_t sort_buffer_pos;
 };
 
-/* ============================================================
- * Internal Schema Operations
- * ============================================================ */
-
-/*
- * Schema entry - represents a collection in _mongolite_schema
- * Note: Index metadata now stored entirely in wtree3's index persistence system
- */
-typedef struct mongolite_schema_entry {
-    bson_oid_t oid;                     /* Unique identifier */
-    char *name;                         /* Collection name */
-    char *tree_name;                    /* LMDB tree name (e.g., "col:users") */
-    char *type;                         /* Always "collection" now */
-    int64_t created_at;                 /* Creation timestamp (ms) */
-    int64_t modified_at;                /* Last modification (ms) */
-    int64_t doc_count;                  /* Document count */
-    bson_t *options;                    /* Creation options (capped, validators, etc.) */
-    bson_t *metadata;                   /* User-defined metadata */
-
-    /* REMOVED: indexes, collection_name, keys, unique, sparse */
-    /* These are now managed by wtree3's index persistence system */
-} mongolite_schema_entry_t;
-
-/* Schema operations (internal) */
-int _mongolite_schema_init(mongolite_db_t *db, gerror_t *error);
-int _mongolite_schema_get(mongolite_db_t *db, const char *name,
-                          mongolite_schema_entry_t *entry, gerror_t *error);
-int _mongolite_schema_put(mongolite_db_t *db, const mongolite_schema_entry_t *entry,
-                          gerror_t *error);
-int _mongolite_schema_delete(mongolite_db_t *db, const char *name, gerror_t *error);
-int _mongolite_schema_list(mongolite_db_t *db, char ***names, size_t *count,
-                           const char *type_filter, gerror_t *error);
-void _mongolite_schema_entry_free(mongolite_schema_entry_t *entry);
-
-/* Schema serialization */
-bson_t* _mongolite_schema_entry_to_bson(const mongolite_schema_entry_t *entry);
-int _mongolite_schema_entry_from_bson(const bson_t *doc,
-                                       mongolite_schema_entry_t *entry,
-                                       gerror_t *error);
+/* Note: Schema system removed - no longer needed */
 
 /* ============================================================
  * Internal Tree Cache Operations
@@ -284,10 +227,7 @@ void _mongolite_release_read_txn(mongolite_db_t *db, wtree3_txn_t *txn);
 int _mongolite_commit_if_auto(mongolite_db_t *db, wtree3_txn_t *txn, gerror_t *error);
 void _mongolite_abort_if_auto(mongolite_db_t *db, wtree3_txn_t *txn);
 
-/* Doc count update (within existing transaction) - may be removed when fully migrated */
-int _mongolite_update_doc_count_txn(mongolite_db_t *db, wtree3_txn_t *txn,
-                                     const char *collection, int64_t delta,
-                                     gerror_t *error);
+/* Note: Doc count now managed automatically by wtree3_tree_count() */
 
 /* Auto-resize database on MDB_MAP_FULL (doubles mapsize) */
 int _mongolite_try_resize(mongolite_db_t *db, gerror_t *error);

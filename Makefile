@@ -11,7 +11,9 @@
 #   make coverage     - Debug build with coverage instrumentation
 #
 # Run:
-#   make test         - Run all tests
+#   make test         - Run unit tests (excluding stress tests)
+#   make test-stress  - Run stress tests only
+#   make test-all     - Run all tests (including stress)
 #   make test-valgrind        - Run tests with Valgrind (summary)
 #   make test-valgrind-verbose - Run tests with full Valgrind output
 #   make test-sanitize - Run tests with ASan/UBSan checks
@@ -54,7 +56,7 @@ ENABLE_COVERAGE ?= OFF
 COVERAGE_DIR := $(BUILD_DIR)/coverage
 COVERAGE_INFO := $(COVERAGE_DIR)/coverage.info
 
-.PHONY: all build debug release valgrind sanitize test benchmark clean rebuild help
+.PHONY: all build debug release valgrind sanitize test test-stress test-all benchmark clean rebuild help
 .PHONY: bench-insert bench-find bench-update bench-delete bench-bson
 .PHONY: test-valgrind test-valgrind-verbose test-sanitize
 .PHONY: coverage coverage-run coverage-html coverage-clean coverage-report
@@ -99,6 +101,12 @@ lto:
 # ============================================================
 
 test:
+	@ctest --test-dir $(BUILD_DIR) --output-on-failure -LE stress
+
+test-stress:
+	@ctest --test-dir $(BUILD_DIR) --output-on-failure -L stress
+
+test-all:
 	@ctest --test-dir $(BUILD_DIR) --output-on-failure
 
 test-sanitize:
@@ -112,9 +120,11 @@ test-valgrind:
 	@echo "Running tests with Valgrind (summary mode)..."
 	@echo "=============================================="
 	@failed=0; \
-	for test in $(BUILD_DIR)/bin/test_*; do \
+	for test in $(BUILD_DIR)/bin/test_* $(BUILD_DIR)/tests/wtree/wtree_*; do \
+		[ -x "$$test" ] || continue; \
 		name=$$(basename $$test); \
 		if [ "$$name" = "test_debug_update" ]; then continue; fi; \
+		if echo "$$name" | grep -q "stress"; then continue; fi; \
 		result=$$(valgrind --leak-check=full --error-exitcode=1 \
 			--quiet --log-fd=1 $$test 2>&1); \
 		exit_code=$$?; \
@@ -137,9 +147,11 @@ test-valgrind:
 
 # Run tests with verbose Valgrind output (for debugging)
 test-valgrind-verbose:
-	@for test in $(BUILD_DIR)/bin/test_*; do \
+	@for test in $(BUILD_DIR)/bin/test_* $(BUILD_DIR)/tests/wtree/wtree_*; do \
+		[ -x "$$test" ] || continue; \
 		name=$$(basename $$test); \
 		if [ "$$name" = "test_debug_update" ]; then continue; fi; \
+		if echo "$$name" | grep -q "stress"; then continue; fi; \
 		echo "=== $$name ==="; \
 		valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes $$test; \
 		echo ""; \
@@ -280,7 +292,9 @@ help:
 	@echo "  make lto          Build Release with Link-Time Optimization"
 	@echo ""
 	@echo "Test Commands:"
-	@echo "  make test                 Run all unit tests"
+	@echo "  make test                 Run unit tests (excluding stress tests)"
+	@echo "  make test-stress          Run stress tests only"
+	@echo "  make test-all             Run all tests (including stress)"
 	@echo "  make test-valgrind        Run tests with Valgrind (summary)"
 	@echo "  make test-valgrind-verbose Run tests with full Valgrind output"
 	@echo "  make test-sanitize        Run tests with ASan/UBSan checks"

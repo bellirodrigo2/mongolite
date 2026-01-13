@@ -88,15 +88,7 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
         return -1;
     }
 
-    /* Update doc count within the same transaction for atomicity */
-    if (deleted) {
-        rc = _mongolite_update_doc_count_txn(db, txn, collection, -1, error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            _mongolite_abort_if_auto(db, txn);
-            _mongolite_unlock(db);
-            return -1;
-        }
-    }
+    /* Note: Doc count is maintained by wtree3 internally */
 
     /* Commit */
     rc = _mongolite_commit_if_auto(db, txn, error);
@@ -202,15 +194,7 @@ int mongolite_delete_many(mongolite_db_t *db, const char *collection,
         mongoc_matcher_destroy(matcher);
     }
 
-    /* Update doc count within the same transaction for atomicity */
-    if (MONGOLITE_LIKELY(count > 0)) {
-        rc = _mongolite_update_doc_count_txn(db, txn, collection, -count, error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            _mongolite_abort_if_auto(db, txn);
-            _mongolite_unlock(db);
-            return -1;
-        }
-    }
+    /* Note: Doc count is maintained by wtree3 internally */
 
     /* Commit */
     rc = _mongolite_commit_if_auto(db, txn, error);

@@ -287,14 +287,8 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
             return rc;
         }
 
-        /* Update doc count */
-        rc = _mongolite_update_doc_count_txn(db, txn, collection, 1, error);
+        /* Note: Doc count is maintained by wtree3 internally */
         bson_destroy(new_doc);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            _mongolite_abort_if_auto(db, txn);
-            _mongolite_unlock(db);
-            return rc;
-        }
     }
 
     rc = _mongolite_commit_if_auto(db, txn, error);
@@ -525,14 +519,7 @@ int mongolite_update_many(mongolite_db_t *db, const char *collection,
             return rc;
         }
 
-        /* Update doc count */
-        rc = _mongolite_update_doc_count_txn(db, txn, collection, 1, error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            bson_destroy(new_doc);
-            _mongolite_abort_if_auto(db, txn);
-            _mongolite_unlock(db);
-            return rc;
-        }
+        /* Note: Doc count is maintained by wtree3 internally */
 
         bson_destroy(new_doc);
         updated_count = 1;  /* We inserted one document */
@@ -928,14 +915,7 @@ bson_t* mongolite_find_and_modify(mongolite_db_t *db, const char *collection,
             return NULL;
         }
 
-        /* Update doc count */
-        rc = _mongolite_update_doc_count_txn(db, txn, collection, 1, error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
-            bson_destroy(new_doc);
-            _mongolite_abort_if_auto(db, txn);
-            _mongolite_unlock(db);
-            return NULL;
-        }
+        /* Note: Doc count is maintained by wtree3 internally */
 
         /* Return new document if requested, otherwise NULL (no old document) */
         result = return_new ? new_doc : NULL;
