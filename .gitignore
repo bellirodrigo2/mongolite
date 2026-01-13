@@ -9,6 +9,7 @@ MinSizeRel/
 RelWithDebInfo/
 
 todo
+PRODUCTION_READINESS.md
 
 # Test and benchmark folders
 test_*/
