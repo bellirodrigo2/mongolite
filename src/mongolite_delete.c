@@ -27,44 +27,40 @@ int mongolite_delete_one(mongolite_db_t *db, const char *collection,
     bson_oid_t doc_id;
     bson_t *doc_to_delete = NULL;
 
+    /* Lock database FIRST to avoid race conditions */
+    _mongolite_lock(db);
+
+    /* Get collection tree */
+    wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    if (MONGOLITE_UNLIKELY(!tree)) {
+        _mongolite_unlock(db);
+        return -1;
+    }
+
     if (MONGOLITE_LIKELY(_mongolite_is_id_query(filter, &doc_id))) {
         /* Fast path: direct _id lookup */
-        _mongolite_lock(db);
-        wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-        if (MONGOLITE_LIKELY(tree)) {
-            doc_to_delete = _mongolite_find_by_id(db, tree, &doc_id, error);
-        }
-        /* Keep lock for delete operation below */
+        doc_to_delete = _mongolite_find_by_id(db, tree, &doc_id, error);
     } else {
-        /* Slow path: full scan to find document */
-        doc_to_delete = mongolite_find_one(db, collection, filter, NULL, error);
+        /* Slow path: full scan to find document (under lock) */
+        doc_to_delete = _mongolite_find_one_scan(db, tree, collection, filter, error);
         if (MONGOLITE_UNLIKELY(!doc_to_delete)) {
             /* No match found - not an error */
+            _mongolite_unlock(db);
             return 0;
         }
 
         /* Extract _id */
         if (MONGOLITE_UNLIKELY(!extract_doc_oid_with_error(doc_to_delete, &doc_id, error))) {
             bson_destroy(doc_to_delete);
+            _mongolite_unlock(db);
             return -1;
         }
-
-        /* Lock database for delete */
-        _mongolite_lock(db);
     }
 
     /* If document wasn't found, unlock and return */
     if (!doc_to_delete) {
         _mongolite_unlock(db);
         return 0;  /* No match found - not an error */
-    }
-
-    /* Get collection tree (wtree3 - indexes maintained automatically) */
-    wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-    if (MONGOLITE_UNLIKELY(!tree)) {
-        bson_destroy(doc_to_delete);
-        _mongolite_unlock(db);
-        return -1;
     }
 
     /* Begin transaction */

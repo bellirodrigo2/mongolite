@@ -1,13 +1,18 @@
 /*
- * mongolite_update.c - Update and replace operations (Phase 6)
+ * mongolite_update.c - Update and replace operations
  *
  * Functions:
  * - mongolite_update_one() - Update first matching document
  * - mongolite_update_many() - Update all matching documents
  * - mongolite_replace_one() - Replace entire document
+ * - mongolite_find_and_modify() - Atomic find and update
  * - JSON wrappers for all operations
  *
  * Update operators are implemented in bson_update.c
+ *
+ * Design: Uses wtree3_upsert_txn() with merge callbacks for consistent
+ * handling of insert/update logic. This eliminates code duplication and
+ * ensures correct key handling.
  */
 
 #include "mongolite_internal.h"
@@ -19,57 +24,55 @@
 
 #define MONGOLITE_LIB "mongolite"
 
+/* _ensure_doc_has_id is now _mongolite_ensure_doc_id in mongolite_util.c */
+
 /* ============================================================
- * BSON Merge Function for wtree3 Upsert
+ * BSON Merge Callback for wtree3 Upsert
+ *
+ * This callback is used by wtree3_upsert_txn() to merge existing
+ * documents with update operations. It handles both:
+ * - Update: Apply operators ($set, $inc, etc.) to existing document
+ * - Insert: Build base from filter and apply operators
  * ============================================================ */
 
 /**
  * Context for BSON merge during upsert operations.
- * Contains the update operators and filter for building base document.
  */
 typedef struct {
     const bson_t *update;  /* Update operators ($set, $inc, etc.) */
     const bson_t *filter;  /* Query filter for upsert base (may be NULL) */
-} bson_merge_ctx_t;
+    gerror_t *error;       /* Error output */
+} mongolite_merge_ctx_t;
 
 /**
- * Merge function for wtree3_upsert_txn().
- * Applies MongoDB update operators to existing document or creates new document.
+ * Merge callback for wtree3_upsert_txn().
+ * Applies MongoDB update operators to existing document.
  *
- * @param existing_value Existing BSON document (NULL for insert)
- * @param existing_len   Length of existing document
- * @param new_value      Not used (update operators are in user_data)
- * @param new_len        Not used
- * @param user_data      Pointer to bson_merge_ctx_t
- * @param out_len        Output: length of merged document
- * @return               malloc'd BSON document, or NULL on error
+ * Note: This is called ONLY when the document already exists.
+ * For insert case, wtree3_upsert_txn uses the provided value directly.
  */
-static void* bson_merge_for_upsert(const void *existing_value, size_t existing_len,
-                                    const void *new_value, size_t new_len,
-                                    void *user_data, size_t *out_len) {
-    bson_merge_ctx_t *ctx = (bson_merge_ctx_t *)user_data;
-    bson_t *result = NULL;
+static void* _mongolite_update_merge(const void *existing_value, size_t existing_len,
+                                      const void *new_value, size_t new_len,
+                                      void *user_data, size_t *out_len) {
+    (void)new_value;
+    (void)new_len;
 
-    if (existing_value) {
-        /* Update existing document */
-        bson_t existing;
-        bson_init_static(&existing, existing_value, existing_len);
+    mongolite_merge_ctx_t *ctx = (mongolite_merge_ctx_t *)user_data;
 
-        /* Apply update operators */
-        result = bson_update_apply(&existing, ctx->update, NULL);
-    } else {
-        /* Insert new document - build base from filter */
-        bson_t *base = bson_upsert_build_base(ctx->filter);
-        if (!base) return NULL;
-
-        /* Apply update operators to base */
-        result = bson_update_apply(base, ctx->update, NULL);
-        bson_destroy(base);
+    /* Parse existing document */
+    bson_t existing;
+    if (!bson_init_static(&existing, existing_value, existing_len)) {
+        set_error(ctx->error, MONGOLITE_LIB, MONGOLITE_ERROR, "Invalid existing document");
+        return NULL;
     }
 
-    if (!result) return NULL;
+    /* Apply update operators */
+    bson_t *result = bson_update_apply(&existing, ctx->update, ctx->error);
+    if (!result) {
+        return NULL;
+    }
 
-    /* Return malloc'd copy of BSON data */
+    /* Return malloc'd copy of BSON data (wtree3 will free it) */
     *out_len = result->len;
     void *data = malloc(*out_len);
     if (data) {
@@ -81,6 +84,12 @@ static void* bson_merge_for_upsert(const void *existing_value, size_t existing_l
 
 /* ============================================================
  * Update one document
+ *
+ * Strategy:
+ * 1. If filter has _id: direct lookup
+ * 2. If no _id in filter: find first match to get _id
+ * 3. If upsert and no match: create new document
+ * 4. Use wtree3_upsert_txn with merge callback for atomic update
  * ============================================================ */
 
 MONGOLITE_HOT
@@ -89,29 +98,11 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
                          bool upsert, gerror_t *error) {
     VALIDATE_DB_COLLECTION_UPDATE(db, collection, update, error, -1);
 
-    /* OPTIMIZATION: Check for direct _id lookup */
+    /* Try to get _id from filter for direct lookup */
     bson_oid_t oid;
     bool has_id = _mongolite_is_id_query(filter, &oid);
 
-    if (!has_id) {
-        /* No _id in filter: need to find document first (slow path) */
-        bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
-        if (existing) {
-            /* Extract _id from found document */
-            if (MONGOLITE_UNLIKELY(!extract_doc_oid_with_error(existing, &oid, error))) {
-                bson_destroy(existing);
-                return -1;
-            }
-            bson_destroy(existing);
-            has_id = true;
-        } else if (!upsert) {
-            /* No match and not upsert - nothing to do */
-            return 0;
-        }
-        /* If upsert and no match, has_id remains false - will insert new doc */
-    }
-
-    /* Lock database */
+    /* Lock database FIRST to avoid race conditions */
     _mongolite_lock(db);
 
     /* Get collection tree */
@@ -119,6 +110,26 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
     if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         return -1;
+    }
+
+    if (!has_id) {
+        /* No _id in filter: need to find document first (under lock) */
+        bson_t *existing = _mongolite_find_one_scan(db, tree, collection, filter, error);
+        if (existing) {
+            /* Extract _id from found document */
+            if (MONGOLITE_UNLIKELY(!extract_doc_oid_with_error(existing, &oid, error))) {
+                bson_destroy(existing);
+                _mongolite_unlock(db);
+                return -1;
+            }
+            bson_destroy(existing);
+            has_id = true;
+        } else if (!upsert) {
+            /* No match and not upsert - nothing to do */
+            _mongolite_unlock(db);
+            return 0;
+        }
+        /* If upsert and no match, has_id remains false */
     }
 
     /* Begin transaction */
@@ -131,10 +142,10 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
     int rc;
 
     if (has_id) {
-        /* Fast path: direct _id update/upsert */
+        /* We have a target _id - update or upsert at this key */
+
         if (upsert) {
-            /* Use wtree3_upsert_txn with merge function */
-            /* First, build the new document for insert case */
+            /* Build document for insert case (if key doesn't exist) */
             bson_t *base = bson_upsert_build_base(filter);
             if (MONGOLITE_UNLIKELY(!base)) {
                 _mongolite_abort_if_auto(db, txn);
@@ -151,39 +162,38 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
                 return -1;
             }
 
-            /* Ensure _id is set */
-            bson_iter_t id_iter;
-            if (!bson_iter_init_find(&id_iter, new_doc, "_id")) {
-                bson_t *with_id = bson_new();
-                if (MONGOLITE_UNLIKELY(!with_id)) {
-                    bson_destroy(new_doc);
-                    _mongolite_abort_if_auto(db, txn);
-                    _mongolite_unlock(db);
-                    set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate document");
-                    return -1;
-                }
-                BSON_APPEND_OID(with_id, "_id", &oid);
-                bson_iter_t iter;
-                if (bson_iter_init(&iter, new_doc)) {
-                    while (bson_iter_next(&iter)) {
-                        bson_append_iter(with_id, bson_iter_key(&iter), -1, &iter);
-                    }
-                }
+            /* Ensure document has _id */
+            bson_oid_t doc_oid;
+            bson_t *final_doc = _mongolite_ensure_doc_id(new_doc, &doc_oid, NULL, error);
+            if (MONGOLITE_UNLIKELY(!final_doc)) {
                 bson_destroy(new_doc);
-                new_doc = with_id;
+                _mongolite_abort_if_auto(db, txn);
+                _mongolite_unlock(db);
+                return -1;
             }
 
-            /* Setup merge context for update case */
-            bson_merge_ctx_t merge_ctx = { .update = update, .filter = filter };
-            wtree3_tree_set_merge_fn(tree, (wtree3_merge_fn)bson_merge_for_upsert, &merge_ctx);
+            /* Use filter's _id for the key (not the document's generated one) */
+            /* This ensures we update the right document if it exists */
 
-            /* Upsert: insert new_doc if key doesn't exist, or merge if it does */
+            /* Setup merge context */
+            mongolite_merge_ctx_t merge_ctx = {
+                .update = update,
+                .filter = filter,
+                .error = error
+            };
+            wtree3_tree_set_merge_fn(tree, _mongolite_update_merge, &merge_ctx);
+
+            /* Upsert: insert final_doc if key doesn't exist, or merge if it does */
             rc = wtree3_upsert_txn(txn, tree,
                                    oid.bytes, sizeof(oid.bytes),
-                                   bson_get_data(new_doc), new_doc->len,
+                                   bson_get_data(final_doc), final_doc->len,
                                    error);
 
             wtree3_tree_set_merge_fn(tree, NULL, NULL);
+
+            if (final_doc != new_doc) {
+                bson_destroy(final_doc);
+            }
             bson_destroy(new_doc);
 
             if (MONGOLITE_UNLIKELY(rc != 0)) {
@@ -191,12 +201,8 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
                 _mongolite_unlock(db);
                 return _mongolite_translate_wtree3_error(rc);
             }
-
-            /* For upsert, we may have inserted - update count if needed */
-            /* This is a simplification - ideally we'd track if insert happened */
-            /* For now, we accept slight inaccuracy in doc count during upserts */
         } else {
-            /* Simple update - check if document exists first */
+            /* Simple update - document must exist */
             const void *existing_value;
             size_t existing_len;
             rc = wtree3_get_txn(txn, tree, oid.bytes, sizeof(oid.bytes),
@@ -209,7 +215,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
                 return 0;
             }
 
-            /* Document exists - apply update */
+            /* Apply update operators */
             bson_t existing;
             bson_init_static(&existing, existing_value, existing_len);
 
@@ -233,7 +239,7 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
             }
         }
     } else {
-        /* Upsert without _id: create new document with generated _id */
+        /* Upsert without _id in filter: create new document with generated _id */
         bson_t *base = bson_upsert_build_base(filter);
         if (MONGOLITE_UNLIKELY(!base)) {
             _mongolite_abort_if_auto(db, txn);
@@ -251,44 +257,32 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
             return -1;
         }
 
-        /* Generate _id if not present */
+        /* Ensure document has _id (generates one if missing) */
         bson_oid_t new_oid;
-        bson_iter_t id_iter;
-        if (!bson_iter_init_find(&id_iter, new_doc, "_id")) {
-            bson_oid_init(&new_oid, NULL);
-            bson_t *with_id = bson_new();
-            if (MONGOLITE_UNLIKELY(!with_id)) {
-                bson_destroy(new_doc);
-                _mongolite_abort_if_auto(db, txn);
-                _mongolite_unlock(db);
-                set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate document");
-                return -1;
-            }
-            BSON_APPEND_OID(with_id, "_id", &new_oid);
-            bson_iter_t iter;
-            if (bson_iter_init(&iter, new_doc)) {
-                while (bson_iter_next(&iter)) {
-                    bson_append_iter(with_id, bson_iter_key(&iter), -1, &iter);
-                }
-            }
-            bson_destroy(new_doc);
-            new_doc = with_id;
-        }
-
-        /* Insert new document */
-        rc = wtree3_insert_one_txn(txn, tree,
-                                    bson_get_data(new_doc), sizeof(bson_oid_t),
-                                    bson_get_data(new_doc), new_doc->len,
-                                    error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
+        bson_t *final_doc = _mongolite_ensure_doc_id(new_doc, &new_oid, NULL, error);
+        if (MONGOLITE_UNLIKELY(!final_doc)) {
             bson_destroy(new_doc);
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
-            return rc;
+            return -1;
         }
 
-        /* Note: Doc count is maintained by wtree3 internally */
+        /* Insert new document - use new_oid as key (FIXED: was using bson_get_data) */
+        rc = wtree3_insert_one_txn(txn, tree,
+                                    new_oid.bytes, sizeof(new_oid.bytes),
+                                    bson_get_data(final_doc), final_doc->len,
+                                    error);
+
+        if (final_doc != new_doc) {
+            bson_destroy(final_doc);
+        }
         bson_destroy(new_doc);
+
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            return _mongolite_translate_wtree3_error(rc);
+        }
     }
 
     rc = _mongolite_commit_if_auto(db, txn, error);
@@ -559,8 +553,27 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
         }
     }
 
-    /* Find the first matching document */
-    bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
+    /* Check for direct _id lookup */
+    bson_oid_t doc_id;
+    bool has_id_filter = _mongolite_is_id_query(filter, &doc_id);
+
+    /* Lock database FIRST to avoid race conditions */
+    _mongolite_lock(db);
+
+    /* Get collection tree (wtree3 - indexes maintained automatically) */
+    wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
+    if (MONGOLITE_UNLIKELY(!tree)) {
+        _mongolite_unlock(db);
+        return -1;
+    }
+
+    /* Find the first matching document (under lock) */
+    bson_t *existing = NULL;
+    if (has_id_filter) {
+        existing = _mongolite_find_by_id(db, tree, &doc_id, error);
+    } else {
+        existing = _mongolite_find_one_scan(db, tree, collection, filter, error);
+    }
 
     if (MONGOLITE_UNLIKELY(!existing)) {
         /* No match found */
@@ -569,6 +582,7 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
             /* Build base from filter, then merge with replacement */
             bson_t *base = bson_upsert_build_base(filter);
             if (MONGOLITE_UNLIKELY(!base)) {
+                _mongolite_unlock(db);
                 set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to build upsert base");
                 return -1;
             }
@@ -577,6 +591,7 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
             bson_t *new_doc = bson_new();
             if (MONGOLITE_UNLIKELY(!new_doc)) {
                 bson_destroy(base);
+                _mongolite_unlock(db);
                 set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate document");
                 return -1;
             }
@@ -599,6 +614,13 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
             if (!has_id) {
                 bson_oid_init(&new_oid, NULL);
                 BSON_APPEND_OID(new_doc, "_id", &new_oid);
+            } else {
+                /* Extract OID from new_doc for insert key */
+                if (bson_iter_init_find(&id_iter, new_doc, "_id") && BSON_ITER_HOLDS_OID(&id_iter)) {
+                    bson_oid_copy(bson_iter_oid(&id_iter), &new_oid);
+                } else {
+                    bson_oid_init(&new_oid, NULL);
+                }
             }
 
             /* Copy base fields (except _id) */
@@ -627,19 +649,45 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
 
             bson_destroy(base);
 
-            /* Insert using mongolite_insert_one */
-            bson_oid_t inserted_id;
-            int rc = mongolite_insert_one(db, collection, new_doc, &inserted_id, error);
+            /* Begin transaction for insert */
+            wtree3_txn_t *txn = _mongolite_get_write_txn(db, error);
+            if (MONGOLITE_UNLIKELY(!txn)) {
+                bson_destroy(new_doc);
+                _mongolite_unlock(db);
+                return -1;
+            }
+
+            /* Insert directly (we already have tree and lock) */
+            int rc = wtree3_insert_one_txn(txn, tree,
+                                            new_oid.bytes, sizeof(new_oid.bytes),
+                                            bson_get_data(new_doc), new_doc->len,
+                                            error);
             bson_destroy(new_doc);
-            return rc;
+
+            if (MONGOLITE_UNLIKELY(rc != 0)) {
+                _mongolite_abort_if_auto(db, txn);
+                _mongolite_unlock(db);
+                return _mongolite_translate_wtree3_error(rc);
+            }
+
+            rc = _mongolite_commit_if_auto(db, txn, error);
+            if (MONGOLITE_UNLIKELY(rc != 0)) {
+                _mongolite_unlock(db);
+                return -1;
+            }
+
+            db->changes = 1;
+            _mongolite_unlock(db);
+            return 0;
         }
+        _mongolite_unlock(db);
         return 0;
     }
 
     /* Extract _id from existing document */
-    bson_oid_t doc_id;
     if (MONGOLITE_UNLIKELY(!extract_doc_oid_with_error(existing, &doc_id, error))) {
         bson_destroy(existing);
+        _mongolite_unlock(db);
         return -1;
     }
 
@@ -654,18 +702,6 @@ int mongolite_replace_one(mongolite_db_t *db, const char *collection,
         if (strcmp(key, "_id") != 0) {  /* Skip _id if present in replacement */
             bson_append_iter(new_doc, key, -1, &iter);
         }
-    }
-
-    /* Lock database */
-    _mongolite_lock(db);
-
-    /* Get collection tree (wtree3 - indexes maintained automatically) */
-    wtree3_tree_t *tree = _mongolite_get_collection_tree(db, collection, error);
-    if (MONGOLITE_UNLIKELY(!tree)) {
-        bson_destroy(existing);
-        bson_destroy(new_doc);
-        _mongolite_unlock(db);
-        return -1;
     }
 
     /* Begin transaction */
@@ -799,27 +835,7 @@ bson_t* mongolite_find_and_modify(mongolite_db_t *db, const char *collection,
     bson_oid_t oid;
     bool has_id = _mongolite_is_id_query(filter, &oid);
 
-    if (!has_id && !upsert) {
-        /* Need to find document first to get _id */
-        bson_t *existing = mongolite_find_one(db, collection, filter, NULL, error);
-        if (!existing) {
-            return NULL;  /* No match */
-        }
-
-        if (MONGOLITE_UNLIKELY(!extract_doc_oid_with_error(existing, &oid, error))) {
-            bson_destroy(existing);
-            return NULL;
-        }
-        bson_destroy(existing);
-        has_id = true;
-    }
-
-    if (!has_id && !upsert) {
-        /* No _id and not upsert - nothing to do */
-        return NULL;
-    }
-
-    /* Lock database */
+    /* Lock database FIRST to avoid race conditions */
     _mongolite_lock(db);
 
     /* Get collection tree */
@@ -827,6 +843,23 @@ bson_t* mongolite_find_and_modify(mongolite_db_t *db, const char *collection,
     if (MONGOLITE_UNLIKELY(!tree)) {
         _mongolite_unlock(db);
         return NULL;
+    }
+
+    if (!has_id && !upsert) {
+        /* Need to find document first to get _id (under lock) */
+        bson_t *existing = _mongolite_find_one_scan(db, tree, collection, filter, error);
+        if (!existing) {
+            _mongolite_unlock(db);
+            return NULL;  /* No match */
+        }
+
+        if (MONGOLITE_UNLIKELY(!extract_doc_oid_with_error(existing, &oid, error))) {
+            bson_destroy(existing);
+            _mongolite_unlock(db);
+            return NULL;
+        }
+        bson_destroy(existing);
+        has_id = true;
     }
 
     /* Begin transaction */
@@ -879,49 +912,37 @@ bson_t* mongolite_find_and_modify(mongolite_db_t *db, const char *collection,
             return NULL;
         }
 
-        /* Generate _id if not present */
+        /* Ensure document has _id (generates one if missing) */
         bson_oid_t new_oid;
-        bson_iter_t id_iter;
-        if (!bson_iter_init_find(&id_iter, new_doc, "_id")) {
-            bson_oid_init(&new_oid, NULL);
-            bson_t *with_id = bson_new();
-            if (MONGOLITE_UNLIKELY(!with_id)) {
-                bson_destroy(new_doc);
-                _mongolite_abort_if_auto(db, txn);
-                _mongolite_unlock(db);
-                set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate document");
-                return NULL;
-            }
-            BSON_APPEND_OID(with_id, "_id", &new_oid);
-            bson_iter_t iter;
-            if (bson_iter_init(&iter, new_doc)) {
-                while (bson_iter_next(&iter)) {
-                    bson_append_iter(with_id, bson_iter_key(&iter), -1, &iter);
-                }
-            }
-            bson_destroy(new_doc);
-            new_doc = with_id;
-        }
-
-        /* Insert new document */
-        int rc = wtree3_insert_one_txn(txn, tree,
-                                        bson_get_data(new_doc), sizeof(bson_oid_t),
-                                        bson_get_data(new_doc), new_doc->len,
-                                        error);
-        if (MONGOLITE_UNLIKELY(rc != 0)) {
+        bson_t *final_doc = _mongolite_ensure_doc_id(new_doc, &new_oid, NULL, error);
+        if (MONGOLITE_UNLIKELY(!final_doc)) {
             bson_destroy(new_doc);
             _mongolite_abort_if_auto(db, txn);
             _mongolite_unlock(db);
             return NULL;
         }
 
-        /* Note: Doc count is maintained by wtree3 internally */
+        /* Insert new document - use new_oid as key (FIXED: was using bson_get_data) */
+        int rc = wtree3_insert_one_txn(txn, tree,
+                                        new_oid.bytes, sizeof(new_oid.bytes),
+                                        bson_get_data(final_doc), final_doc->len,
+                                        error);
+
+        if (MONGOLITE_UNLIKELY(rc != 0)) {
+            if (final_doc != new_doc) bson_destroy(final_doc);
+            bson_destroy(new_doc);
+            _mongolite_abort_if_auto(db, txn);
+            _mongolite_unlock(db);
+            return NULL;
+        }
 
         /* Return new document if requested, otherwise NULL (no old document) */
-        result = return_new ? new_doc : NULL;
-        if (!return_new) {
-            bson_destroy(new_doc);
+        if (return_new) {
+            result = bson_copy(final_doc);
         }
+
+        if (final_doc != new_doc) bson_destroy(final_doc);
+        bson_destroy(new_doc);
     }
 
     int rc = _mongolite_commit_if_auto(db, txn, error);

@@ -211,6 +211,10 @@ int64_t _mongolite_now_ms(void);
 /* OID helpers */
 int64_t _mongolite_oid_to_rowid(const bson_oid_t *oid);
 
+/* Document _id helpers */
+bson_t* _mongolite_ensure_doc_id(const bson_t *doc, bson_oid_t *out_oid,
+                                  bool *was_generated, gerror_t *error);
+
 /* Lock helpers */
 int _mongolite_lock_init(mongolite_db_t *db);
 void _mongolite_lock_free(mongolite_db_t *db);
@@ -236,6 +240,12 @@ int _mongolite_try_resize(mongolite_db_t *db, gerror_t *error);
 bool _mongolite_is_id_query(const bson_t *filter, bson_oid_t *out_oid);
 bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree3_tree_t *tree,
                                const bson_oid_t *oid, gerror_t *error);
+
+/* Full scan to find first matching document.
+ * IMPORTANT: Caller must already hold the database lock. */
+bson_t* _mongolite_find_one_scan(mongolite_db_t *db, wtree3_tree_t *tree,
+                                  const char *collection, const bson_t *filter,
+                                  gerror_t *error);
 
 /* ============================================================
  * Internal Index Operations (Phase 1 Infrastructure)

@@ -75,6 +75,66 @@ int64_t _mongolite_oid_to_rowid(const bson_oid_t *oid) {
 }
 
 /* ============================================================
+ * Document _id Helpers
+ * ============================================================ */
+
+/**
+ * Ensure a BSON document has an _id field.
+ * If missing, generates a new OID and prepends it.
+ *
+ * @param doc           The document to check/modify
+ * @param out_oid       Output: the _id OID (existing or generated)
+ * @param was_generated Output: true if _id was generated (optional, may be NULL)
+ * @param error         Error output (optional, may be NULL)
+ * @return              Document with _id (may be original or new copy).
+ *                      Caller must check if result != doc and destroy if so.
+ *                      Returns NULL on allocation error.
+ */
+bson_t* _mongolite_ensure_doc_id(const bson_t *doc, bson_oid_t *out_oid,
+                                  bool *was_generated, gerror_t *error) {
+    bson_iter_t iter;
+
+    if (was_generated) *was_generated = false;
+
+    /* Check if _id exists */
+    if (bson_iter_init_find(&iter, doc, "_id")) {
+        /* Extract existing _id */
+        if (BSON_ITER_HOLDS_OID(&iter)) {
+            bson_oid_copy(bson_iter_oid(&iter), out_oid);
+        } else {
+            /* Non-OID _id - generate OID for internal key but keep original _id */
+            bson_oid_init(out_oid, NULL);
+        }
+        return (bson_t*)doc;  /* Use original */
+    }
+
+    /* No _id - generate one and prepend */
+    if (was_generated) *was_generated = true;
+    bson_oid_init(out_oid, NULL);
+
+    bson_t *new_doc = bson_new();
+    if (!new_doc) {
+        if (error) {
+            set_error(error, MONGOLITE_LIB, MONGOLITE_ENOMEM, "Failed to allocate document");
+        }
+        return NULL;
+    }
+
+    /* Prepend _id */
+    BSON_APPEND_OID(new_doc, "_id", out_oid);
+
+    /* Copy all fields from original */
+    if (bson_iter_init(&iter, doc)) {
+        while (bson_iter_next(&iter)) {
+            const bson_value_t *value = bson_iter_value(&iter);
+            bson_append_value(new_doc, bson_iter_key(&iter), -1, value);
+        }
+    }
+
+    return new_doc;
+}
+
+/* ============================================================
  * Lock Helpers
  * ============================================================ */
 

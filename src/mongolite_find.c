@@ -83,69 +83,38 @@ bson_t* _mongolite_find_by_id(mongolite_db_t *db, wtree3_tree_t *tree,
 
 /* ============================================================
  * Internal: Full scan to find first matching document
+ *
+ * Uses cursor module for iteration and filtering.
+ * IMPORTANT: Caller must already hold the database lock.
  * ============================================================ */
 
-static bson_t* _find_one_scan(mongolite_db_t *db, wtree3_tree_t *tree,
-                               const bson_t *filter, gerror_t *error) {
-    /* Create matcher if we have a filter */
-    mongoc_matcher_t *matcher = NULL;
-    if (filter && !bson_empty(filter)) {
-        bson_error_t bson_err;
-        matcher = mongoc_matcher_new(filter, &bson_err);
-        if (MONGOLITE_UNLIKELY(!matcher)) {
-            set_error(error, "bsonmatch", MONGOLITE_EQUERY,
-                     "Invalid query: %s", bson_err.message);
-            return NULL;
-        }
-    }
-
+bson_t* _mongolite_find_one_scan(mongolite_db_t *db, wtree3_tree_t *tree,
+                                  const char *collection, const bson_t *filter,
+                                  gerror_t *error) {
     wtree3_txn_t *txn = _mongolite_get_read_txn(db, error);
     if (MONGOLITE_UNLIKELY(!txn)) {
-        if (matcher) mongoc_matcher_destroy(matcher);
         return NULL;
     }
 
-    wtree3_iterator_t *iter = wtree3_iterator_create_with_txn(tree, txn, error);
-    if (MONGOLITE_UNLIKELY(!iter)) {
+    /* Create cursor with limit 1 */
+    mongolite_cursor_t *cursor = _mongolite_cursor_create_with_txn(
+        db, tree, collection, txn, filter, error);
+    if (MONGOLITE_UNLIKELY(!cursor)) {
         _mongolite_release_read_txn(db, txn);
-        if (matcher) mongoc_matcher_destroy(matcher);
         return NULL;
     }
 
+    mongolite_cursor_set_limit(cursor, 1);
+
+    /* Get first matching document */
     bson_t *result = NULL;
-
-    if (MONGOLITE_LIKELY(wtree3_iterator_first(iter))) {
-        do {
-            const void *value;
-            size_t value_size;
-
-            if (MONGOLITE_UNLIKELY(!wtree3_iterator_value(iter, &value, &value_size))) {
-                continue;
-            }
-
-            /* Parse document */
-            bson_t doc;
-            if (MONGOLITE_UNLIKELY(!bson_init_static(&doc, value, value_size))) {
-                continue;
-            }
-
-            /* Check if matches */
-            bool matches = true;
-            if (matcher) {
-                matches = mongoc_matcher_match(matcher, &doc);
-            }
-
-            if (matches) {
-                /* Found a match - copy it */
-                result = bson_copy(&doc);
-                break;
-            }
-        } while (wtree3_iterator_next(iter));
+    const bson_t *doc;
+    if (mongolite_cursor_next(cursor, &doc)) {
+        result = bson_copy(doc);
     }
 
-    wtree3_iterator_close(iter);
+    mongolite_cursor_destroy(cursor);
     _mongolite_release_read_txn(db, txn);
-    if (matcher) mongoc_matcher_destroy(matcher);
 
     return result;
 }
@@ -201,7 +170,7 @@ bson_t* mongolite_find_one(mongolite_db_t *db, const char *collection,
     }
 
     /* Fallback: Full scan with filter */
-    result = _find_one_scan(db, tree, filter, error);
+    result = _mongolite_find_one_scan(db, tree, collection, filter, error);
 
     _mongolite_unlock(db);
 
@@ -288,66 +257,29 @@ mongolite_cursor_t* mongolite_find(mongolite_db_t *db, const char *collection,
         return NULL;
     }
 
-    /* Create cursor */
-    mongolite_cursor_t *cursor = calloc(1, sizeof(mongolite_cursor_t));
-    if (!cursor) {
-        _mongolite_unlock(db);
-        set_error(error, "system", MONGOLITE_ENOMEM,
-                 "Failed to allocate cursor");
-        return NULL;
-    }
-
-    cursor->db = db;
-    cursor->collection_name = strdup(collection);
-
     /* Create read transaction */
-    cursor->txn = wtree3_txn_begin(db->wdb, false, error);
-    if (!cursor->txn) {
-        free(cursor->collection_name);
-        free(cursor);
+    wtree3_txn_t *txn = wtree3_txn_begin(db->wdb, false, error);
+    if (!txn) {
         _mongolite_unlock(db);
         return NULL;
     }
+
+    /* Create cursor using internal helper */
+    mongolite_cursor_t *cursor = _mongolite_cursor_create_with_txn(
+        db, tree, collection, txn, filter, error);
+    if (!cursor) {
+        wtree3_txn_abort(txn);
+        _mongolite_unlock(db);
+        return NULL;
+    }
+
+    /* Take ownership of the transaction */
     cursor->owns_txn = true;
-
-    /* Create iterator */
-    cursor->iter = wtree3_iterator_create_with_txn(tree, cursor->txn, error);
-    if (!cursor->iter) {
-        wtree3_txn_abort(cursor->txn);
-        free(cursor->collection_name);
-        free(cursor);
-        _mongolite_unlock(db);
-        return NULL;
-    }
-
-    /* Create matcher if we have a filter */
-    if (filter && !bson_empty(filter)) {
-        bson_error_t bson_err;
-        cursor->matcher = mongoc_matcher_new(filter, &bson_err);
-        if (!cursor->matcher) {
-            wtree3_iterator_close(cursor->iter);
-            wtree3_txn_abort(cursor->txn);
-            free(cursor->collection_name);
-            free(cursor);
-            _mongolite_unlock(db);
-            set_error(error, "bsonmatch", MONGOLITE_EQUERY,
-                     "Invalid query: %s", bson_err.message);
-            return NULL;
-        }
-    }
 
     /* Copy projection if provided */
     if (projection && !bson_empty(projection)) {
         cursor->projection = bson_copy(projection);
     }
-
-    /* Initialize position */
-    cursor->limit = 0;  /* No limit */
-    cursor->skip = 0;
-    cursor->position = 0;
-    cursor->returned = 0;
-    cursor->exhausted = false;
-    cursor->current_doc = NULL;
 
     _mongolite_unlock(db);
     return cursor;

@@ -11,7 +11,7 @@
  */
 
 #include "mongolite_internal.h"
-#include "key_compare.h"
+// #include "key_compare.h"
 #include <stdlib.h>
 #include <string.h>
 

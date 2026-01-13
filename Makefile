@@ -163,7 +163,7 @@ test-valgrind-verbose:
 
 # Build with coverage instrumentation
 coverage:
-	@$(MAKE) BUILD_TYPE=Debug ENABLE_COVERAGE=ON build
+	@$(MAKE) BUILD_TYPE=Debug ENABLE_COVERAGE=ON build 
 
 # Clean coverage data (before running tests)
 coverage-clean:
@@ -174,7 +174,7 @@ coverage-clean:
 # Run tests and collect coverage
 coverage-run: coverage-clean
 	@echo "Running tests with coverage instrumentation..."
-	@ctest --test-dir $(BUILD_DIR) --output-on-failure
+	@ctest --test-dir $(BUILD_DIR) --output-on-failure -LE stress
 	@mkdir -p $(COVERAGE_DIR)
 
 # Generate HTML report with lcov

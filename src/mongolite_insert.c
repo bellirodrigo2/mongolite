@@ -71,53 +71,7 @@ int _mongolite_try_resize(mongolite_db_t *db, gerror_t *error) {
     return rc;
 }
 
-/* ============================================================
- * Internal: Ensure document has _id field
- *
- * If doc has _id, copies it to out_id and returns the doc as-is.
- * If doc lacks _id, creates a new doc with generated _id prepended.
- * Returns: the document to use (may be original or new copy)
- *          Caller must check if returned doc != input doc and destroy if so.
- * ============================================================ */
-
-MONGOLITE_HOT
-static bson_t* _ensure_id(const bson_t *doc, bson_oid_t *out_id, bool *was_generated) {
-    bson_iter_t iter;
-
-    *was_generated = false;
-
-    /* Check if _id exists */
-    if (MONGOLITE_LIKELY(bson_iter_init_find(&iter, doc, "_id"))) {
-        /* Extract existing _id */
-        if (MONGOLITE_LIKELY(BSON_ITER_HOLDS_OID(&iter))) {
-            bson_oid_copy(bson_iter_oid(&iter), out_id);
-        } else {
-            /* Non-OID _id - generate a hash or use as-is */
-            /* For simplicity, generate new OID for non-OID _id tracking */
-            bson_oid_init(out_id, NULL);
-        }
-        return (bson_t*)doc;  /* Use original */
-    }
-
-    /* No _id - generate one and prepend */
-    *was_generated = true;
-    bson_oid_init(out_id, NULL);
-
-    bson_t *new_doc = bson_new();
-    if (MONGOLITE_UNLIKELY(!new_doc)) return NULL;
-
-    /* Prepend _id */
-    BSON_APPEND_OID(new_doc, "_id", out_id);
-
-    /* Copy all fields from original */
-    bson_iter_init(&iter, doc);
-    while (bson_iter_next(&iter)) {
-        const bson_value_t *value = bson_iter_value(&iter);
-        bson_append_value(new_doc, bson_iter_key(&iter), -1, value);
-    }
-
-    return new_doc;
-}
+/* _ensure_id is now _mongolite_ensure_doc_id in mongolite_util.c */
 
 /* ============================================================
  * Internal: Check if error is MAP_FULL (needs resize)
@@ -150,11 +104,9 @@ int mongolite_insert_one(mongolite_db_t *db, const char *collection,
     /* Ensure document has _id */
     bson_oid_t oid;
     bool id_generated = false;
-    bson_t *final_doc = _ensure_id(doc, &oid, &id_generated);
+    bson_t *final_doc = _mongolite_ensure_doc_id(doc, &oid, &id_generated, error);
     if (MONGOLITE_UNLIKELY(!final_doc)) {
         _mongolite_unlock(db);
-        set_error(error, "system", MONGOLITE_ENOMEM,
-                 "Failed to prepare document");
         return MONGOLITE_ENOMEM;
     }
 
@@ -325,12 +277,10 @@ retry_insert_many:
 
             bson_oid_t *oid_ptr = oids ? &oids[inserted] : &temp_oids[inserted];
             bool id_generated = false;
-            bson_t *final_doc = _ensure_id(docs[i], oid_ptr, &id_generated);
+            bson_t *final_doc = _mongolite_ensure_doc_id(docs[i], oid_ptr, &id_generated, error);
 
             if (MONGOLITE_UNLIKELY(!final_doc)) {
                 rc = MONGOLITE_ENOMEM;
-                set_error(error, "system", MONGOLITE_ENOMEM,
-                         "Failed to prepare document %zu", i);
                 break;
             }
 
