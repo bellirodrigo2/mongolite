@@ -1195,6 +1195,30 @@ int wtree3_update_txn(
 );
 
 /*
+ * Update with merge callback
+ *
+ * Like update_txn but calls merge_fn (if set) to combine existing and new values.
+ * This is useful for MongoDB-style updates where you want to apply update operators
+ * to an existing document.
+ *
+ * Behavior:
+ * - If key doesn't exist: returns WTREE3_NOT_FOUND (unlike upsert which would insert)
+ * - If key exists and merge_fn is set: merge_fn(existing, new) -> result, then update
+ * - If key exists and no merge_fn: just overwrites with new value (same as update_txn)
+ *
+ * Automatically maintains all indexes.
+ *
+ * Returns: 0 on success, WTREE3_NOT_FOUND if key doesn't exist
+ */
+int wtree3_update_with_merge_txn(
+    wtree3_txn_t *txn,
+    wtree3_tree_t *tree,
+    const void *key, size_t key_len,
+    const void *value, size_t value_len,
+    gerror_t *error
+);
+
+/*
  * Upsert a key-value pair (insert or update)
  *
  * If key doesn't exist, inserts it (same as insert_one_txn).
@@ -1281,6 +1305,13 @@ int wtree3_insert_one(
 );
 
 int wtree3_update(
+    wtree3_tree_t *tree,
+    const void *key, size_t key_len,
+    const void *value, size_t value_len,
+    gerror_t *error
+);
+
+int wtree3_update_with_merge(
     wtree3_tree_t *tree,
     const void *key, size_t key_len,
     const void *value, size_t value_len,

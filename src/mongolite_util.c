@@ -135,6 +135,44 @@ bson_t* _mongolite_ensure_doc_id(const bson_t *doc, bson_oid_t *out_oid,
 }
 
 /* ============================================================
+ * Full scan to find first matching document
+ *
+ * Uses cursor module for iteration and filtering.
+ * IMPORTANT: Caller must already hold the database lock.
+ * ============================================================ */
+
+bson_t* _mongolite_find_one_scan(mongolite_db_t *db, wtree3_tree_t *tree,
+                                  const char *collection, const bson_t *filter,
+                                  gerror_t *error) {
+    wtree3_txn_t *txn = _mongolite_get_read_txn(db, error);
+    if (MONGOLITE_UNLIKELY(!txn)) {
+        return NULL;
+    }
+
+    /* Create cursor with limit 1 */
+    mongolite_cursor_t *cursor = _mongolite_cursor_create_with_txn(
+        db, tree, collection, txn, filter, error);
+    if (MONGOLITE_UNLIKELY(!cursor)) {
+        _mongolite_release_read_txn(db, txn);
+        return NULL;
+    }
+
+    mongolite_cursor_set_limit(cursor, 1);
+
+    /* Get first matching document */
+    bson_t *result = NULL;
+    const bson_t *doc;
+    if (mongolite_cursor_next(cursor, &doc)) {
+        result = bson_copy(doc);
+    }
+
+    mongolite_cursor_destroy(cursor);
+    _mongolite_release_read_txn(db, txn);
+
+    return result;
+}
+
+/* ============================================================
  * Lock Helpers
  * ============================================================ */
 

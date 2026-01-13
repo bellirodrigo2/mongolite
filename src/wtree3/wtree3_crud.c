@@ -193,6 +193,70 @@ int wtree3_update_txn(wtree3_txn_t *txn, wtree3_tree_t *tree,
     return WTREE3_OK;
 }
 
+/*
+ * Update with merge callback (like upsert but returns NOT_FOUND if key doesn't exist)
+ *
+ * This function is useful when you need MongoDB-style update semantics where:
+ * - If key exists: call merge_fn to combine existing + update doc, then store result
+ * - If key doesn't exist: return NOT_FOUND (unlike upsert which would insert)
+ *
+ * The merge_fn receives (existing_doc, update_spec) and returns the merged doc.
+ */
+WTREE_HOT WTREE_WARN_UNUSED
+int wtree3_update_with_merge_txn(wtree3_txn_t *txn, wtree3_tree_t *tree,
+                                  const void *key, size_t key_len,
+                                  const void *value, size_t value_len,
+                                  gerror_t *error) {
+    if (WTREE_UNLIKELY(!txn || !tree || !key || !value)) {
+        set_error(error, WTREE3_LIB, WTREE3_EINVAL, "Invalid parameters");
+        return WTREE3_EINVAL;
+    }
+
+    if (WTREE_UNLIKELY(!txn->is_write)) {
+        set_error(error, WTREE3_LIB, WTREE3_EINVAL, "Write operation requires write transaction");
+        return WTREE3_EINVAL;
+    }
+
+    /* Get existing value - return NOT_FOUND if key doesn't exist */
+    MDB_val mkey = {.mv_size = key_len, .mv_data = (void*)key};
+    MDB_val old_val;
+    int rc = mdb_get(txn->txn, tree->dbi, &mkey, &old_val);
+
+    if (WTREE_UNLIKELY(rc == MDB_NOTFOUND)) {
+        set_error(error, WTREE3_LIB, WTREE3_NOT_FOUND, "Key not found");
+        return WTREE3_NOT_FOUND;
+    }
+
+    if (WTREE_UNLIKELY(rc != 0)) {
+        return translate_mdb_error(rc, error);
+    }
+
+    /* Key exists - apply merge if callback set, otherwise just update */
+    if (tree->merge_fn) {
+        /* Call merge callback */
+        size_t merged_len;
+        void *merged_value = tree->merge_fn(
+            old_val.mv_data, old_val.mv_size,
+            value, value_len,
+            tree->merge_user_data,
+            &merged_len
+        );
+
+        if (!merged_value) {
+            set_error(error, WTREE3_LIB, WTREE3_ERROR, "Merge callback returned NULL");
+            return WTREE3_ERROR;
+        }
+
+        /* Update with merged value */
+        rc = wtree3_update_txn(txn, tree, key, key_len, merged_value, merged_len, error);
+        free(merged_value);
+        return rc;
+    }
+
+    /* No merge function - just update with new value */
+    return wtree3_update_txn(txn, tree, key, key_len, value, value_len, error);
+}
+
 WTREE_HOT WTREE_WARN_UNUSED
 int wtree3_upsert_txn(wtree3_txn_t *txn, wtree3_tree_t *tree,
                        const void *key, size_t key_len,
@@ -426,6 +490,29 @@ int wtree3_update(wtree3_tree_t *tree,
     if (!txn) return WTREE3_ERROR;
 
     int rc = wtree3_update_txn(txn, tree, key, key_len, value, value_len, error);
+
+    if (rc == 0) {
+        rc = wtree3_txn_commit(txn, error);
+    } else {
+        wtree3_txn_abort(txn);
+    }
+
+    return rc;
+}
+
+int wtree3_update_with_merge(wtree3_tree_t *tree,
+                              const void *key, size_t key_len,
+                              const void *value, size_t value_len,
+                              gerror_t *error) {
+    if (!tree) {
+        set_error(error, WTREE3_LIB, WTREE3_EINVAL, "Tree cannot be NULL");
+        return WTREE3_EINVAL;
+    }
+
+    wtree3_txn_t *txn = wtree3_txn_begin(tree->db, true, error);
+    if (!txn) return WTREE3_ERROR;
+
+    int rc = wtree3_update_with_merge_txn(txn, tree, key, key_len, value, value_len, error);
 
     if (rc == 0) {
         rc = wtree3_txn_commit(txn, error);

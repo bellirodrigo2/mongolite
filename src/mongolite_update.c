@@ -202,35 +202,28 @@ int mongolite_update_one(mongolite_db_t *db, const char *collection,
                 return _mongolite_translate_wtree3_error(rc);
             }
         } else {
-            /* Simple update - document must exist */
-            const void *existing_value;
-            size_t existing_len;
-            rc = wtree3_get_txn(txn, tree, oid.bytes, sizeof(oid.bytes),
-                                &existing_value, &existing_len, NULL);
+            /* Update with merge - use wtree3_update_with_merge_txn for cleaner code */
+            mongolite_merge_ctx_t merge_ctx = {
+                .update = update,
+                .filter = filter,
+                .error = error
+            };
+            wtree3_tree_set_merge_fn(tree, _mongolite_update_merge, &merge_ctx);
 
-            if (rc != 0) {
+            /* Pass update spec as value - merge callback will apply it to existing doc */
+            rc = wtree3_update_with_merge_txn(txn, tree,
+                                               oid.bytes, sizeof(oid.bytes),
+                                               bson_get_data(update), update->len,
+                                               error);
+
+            wtree3_tree_set_merge_fn(tree, NULL, NULL);
+
+            if (rc == WTREE3_NOT_FOUND) {
                 /* Document doesn't exist - nothing to update */
                 _mongolite_abort_if_auto(db, txn);
                 _mongolite_unlock(db);
                 return 0;
             }
-
-            /* Apply update operators */
-            bson_t existing;
-            bson_init_static(&existing, existing_value, existing_len);
-
-            bson_t *updated = bson_update_apply(&existing, update, error);
-            if (MONGOLITE_UNLIKELY(!updated)) {
-                _mongolite_abort_if_auto(db, txn);
-                _mongolite_unlock(db);
-                return -1;
-            }
-
-            rc = wtree3_update_txn(txn, tree,
-                                   oid.bytes, sizeof(oid.bytes),
-                                   bson_get_data(updated), updated->len,
-                                   error);
-            bson_destroy(updated);
 
             if (MONGOLITE_UNLIKELY(rc != 0)) {
                 _mongolite_abort_if_auto(db, txn);
